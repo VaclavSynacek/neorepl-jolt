@@ -1,0 +1,10 @@
+{:paths ["src"]
+ :deps {org.clojure/clojure {:mvn/version "1.12.5"}
+        nrepl/nrepl {:mvn/version "1.8.0"}
+        org.jline/jline {:mvn/version "4.4.7"}}
+ :aliases
+ {:test {:extra-paths ["test"]
+         :main-opts ["-m" "neorepl.test-runner"]}
+  :1.10 {:override-deps {org.clojure/clojure {:mvn/version "1.10.3"}}}
+  :1.11 {:override-deps {org.clojure/clojure {:mvn/version "1.11.4"}}}
+  :1.12 {:override-deps {org.clojure/clojure {:mvn/version "1.12.5"}}}}}
