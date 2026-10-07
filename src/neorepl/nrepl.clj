@@ -168,6 +168,8 @@
 (defn interrupt
   "Asks the server to interrupt the evaluation with message id in session.
   Returns the responses to the interrupt request itself; the interrupted
-  evaluation reports the status interrupted to its own handler."
-  [client session id]
-  (request client {:op "interrupt" :session session :interrupt-id id}))
+  evaluation reports the status interrupted to its own handler. opts are the
+  same as for `request`."
+  ([client session id] (interrupt client session id {}))
+  ([client session id opts]
+   (request client {:op "interrupt" :session session :interrupt-id id} opts)))

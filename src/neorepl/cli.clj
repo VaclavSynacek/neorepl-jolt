@@ -1,0 +1,52 @@
+(ns neorepl.cli
+  "Command line parsing, small enough to do without tools.cli.
+
+  Options are specs: maps with the :long name (\"--port\"), optionally a
+  :short one (\"-p\"), the :arg name for options that take a value, a :parse
+  function for that value and a :doc line. The option's key is its long name
+  as a keyword."
+  (:require [clojure.string :as str]))
+
+(defn- option-key [{:keys [long]}]
+  (keyword (subs long 2)))
+
+(defn parse
+  "Parses args against specs into {:options {...} :args [...]}, or {:error
+  msg}. Options and arguments can come in any order, values either as the
+  next argument or after =. -- ends the options; - alone is an argument."
+  [specs args]
+  (let [by-name (into {} (for [spec specs
+                               name ((juxt :short :long) spec)
+                               :when name]
+                           [name spec]))]
+    (loop [[a & more :as args] args
+           options {}
+           positional []]
+      (cond
+        (empty? args) {:options options :args positional}
+        (= "--" a) {:options options :args (into positional more)}
+        (or (= "-" a) (not (str/starts-with? a "-"))) (recur more options (conj positional a))
+        :else
+        (let [[name inline] (str/split a #"=" 2)
+              {:keys [arg parse] :or {parse identity} :as spec} (by-name name)]
+          (cond
+            (nil? spec) {:error (str "Unknown option: " name)}
+            (not arg) (if inline
+                        {:error (str name " takes no value")}
+                        (recur more (assoc options (option-key spec) true) positional))
+            (and (nil? inline) (empty? more)) {:error (str name " needs a value")}
+            :else (let [value (or inline (first more))]
+                    ;; parse returning nil or throwing both mean it's invalid.
+                    (if-some [v (try (parse value) (catch Exception _ nil))]
+                      (recur (if inline more (rest more))
+                             (assoc options (option-key spec) v)
+                             positional)
+                      {:error (str "Invalid value for " name ": " value)}))))))))
+
+(defn summary
+  "The options part of a --help text."
+  [specs]
+  (let [lefts (for [{:keys [short long arg]} specs]
+                (str (if short (str short ", ") "    ") long (when arg (str " " arg))))
+        width (apply max (map count lefts))]
+    (str/join "\n" (map #(format (str "  %-" width "s  %s") %1 %2) lefts (map :doc specs)))))

@@ -5,8 +5,30 @@ spiritual successor to [REPLy](https://github.com/trptcolin/reply), with a
 proper line editor, the core of CIDER's tooling and a CLI that works just as
 well for scripts and coding agents as it does for people.
 
-It's early days and there's nothing usable here yet. [PLAN.md](PLAN.md) has
-the details on where this is going.
+It's early days: so far there's `neorepl eval` and not much else.
+[PLAN.md](PLAN.md) has the details on where this is going.
+
+## Usage
+
+There's no release yet. From a checkout,
+[bbin](https://github.com/babashka/bbin) puts a `neorepl` command on your
+path:
+
+```shell
+bbin install .
+```
+
+`neorepl eval` evaluates code on the nREPL server whose `.nrepl-port` file is
+in the current directory or one of its parents:
+
+```shell
+neorepl eval '(+ 1 2)'
+neorepl eval --format json -f script.clj
+echo '(range 3)' | neorepl eval -
+```
+
+Evaluations share a session, so `*ns*`, `*1` and `*e` carry over from one
+call to the next. `neorepl eval --help` has the rest.
 
 ## Development
 
