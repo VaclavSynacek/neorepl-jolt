@@ -1,7 +1,7 @@
 (ns neorepl.nrepl-test
-  (:require [clojure.string :as str]
-            [clojure.test :refer [are deftest is testing use-fixtures]]
+  (:require [clojure.test :refer [are deftest is testing use-fixtures]]
             [neorepl.nrepl :as nrepl]
+            [neorepl.test-server :as test-server :refer [*port*]]
             [nrepl.middleware :as middleware]
             [nrepl.server :as server]
             [nrepl.transport :as transport])
@@ -20,16 +20,7 @@
 (defn- start-server [& opts]
   (apply server/start-server :handler (server/default-handler #'wrap-ping) opts))
 
-(def ^:dynamic *port* nil)
-
-(use-fixtures :once
-  (fn [f]
-    (let [srv (start-server :port 0)]
-      (try
-        (binding [*port* (:port srv)]
-          (f))
-        (finally
-          (server/stop-server srv))))))
+(use-fixtures :once (test-server/fixture :handler (server/default-handler #'wrap-ping)))
 
 (defmacro ^:private with-client
   "Evaluates body with sym bound to a client connected with opts."
@@ -42,9 +33,6 @@
 
 (defn- values [responses]
   (keep :value responses))
-
-(defn- windows? []
-  (str/starts-with? (System/getProperty "os.name") "Windows"))
 
 (deftest parse-url-test
   (are [url opts] (= opts (nrepl/parse-url url))
@@ -67,6 +55,8 @@
     (testing "describe info comes along"
       (is (every? (:ops client) ["eval" "clone" "interrupt" "completions" "lookup"]))
       (is (contains? (:versions client) :nrepl)))
+    (testing "and the address it's connected to"
+      (is (= (str "127.0.0.1:" *port*) (:address client))))
     (testing "op names keep their namespace"
       (is (contains? (:ops client) "neorepl/ping"))
       (is (= "yes" (some :pong (nrepl/request client {:op "neorepl/ping"}))))))
@@ -74,8 +64,7 @@
     (with-client [client {:url (str "nrepl://127.0.0.1:" *port*)}]
       (is (= ["3"] (values (nrepl/request client {:op "eval" :code "(+ 1 2)"}))))))
   (testing "nothing listening"
-    (let [port (with-open [socket (ServerSocket. 0)] (.getLocalPort socket))
-          e (is (thrown? clojure.lang.ExceptionInfo (nrepl/connect {:port port})))]
+    (let [e (is (thrown? clojure.lang.ExceptionInfo (nrepl/connect {:port (test-server/free-port)})))]
       (is (= ::nrepl/no-server (:type (ex-data e))))))
   (testing "something that isn't an nREPL server"
     (with-open [socket (ServerSocket. 0)]
@@ -197,12 +186,13 @@
       (is (not (.isAlive ^Thread (:reader client)))))))
 
 (deftest unix-socket-test
-  (when-not (windows?)
+  (when-not (test-server/windows?)
     (let [path (str (System/getProperty "java.io.tmpdir") "/neorepl-test-" (System/nanoTime) ".sock")
           srv (start-server :socket path)]
       (try
         (doseq [opts [{:socket path} {:url (str "nrepl+unix:" path)}]]
           (with-client [client opts]
+            (is (= path (:address client)))
             (is (= ["3"] (values (nrepl/request client {:op "eval" :code "(+ 1 2)"}))))))
         (finally
           (server/stop-server srv))))))

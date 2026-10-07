@@ -1,0 +1,47 @@
+(ns neorepl.discovery-test
+  (:require [clojure.java.io :as io]
+            [clojure.test :refer [deftest is testing use-fixtures]]
+            [neorepl.discovery :as discovery]
+            [neorepl.nrepl :as nrepl]
+            [neorepl.test-server :as test-server :refer [*port* call-with-temp-dir spit-file]]))
+
+(use-fixtures :once (test-server/fixture))
+
+(defn- canonical [dir path]
+  (str (.getCanonicalFile (io/file dir path))))
+
+(deftest find-ports-test
+  (call-with-temp-dir
+   (fn [dir]
+     (spit-file dir ".nrepl-port" "1111")
+     (spit-file dir "app/.nrepl-port" "2222\n")
+     (spit-file dir "app/.shadow-cljs/nrepl.port" "3333")
+     (spit-file dir "app/src/.nrepl-port" "not a port")
+     (testing "nearest directory first, .nrepl-port before shadow-cljs's"
+       (is (= [{:file (canonical dir "app/.nrepl-port") :port 2222}
+               {:file (canonical dir "app/.shadow-cljs/nrepl.port") :port 3333}
+               {:file (canonical dir ".nrepl-port") :port 1111}]
+              (take 3 (discovery/find-ports (io/file dir "app/src")))))))))
+
+(deftest connect-test
+  (call-with-temp-dir
+   (fn [dir]
+     (testing "no port files anywhere up the tree"
+       ;; Unless a parent of the temp dir happens to have one.
+       (when (empty? (discovery/find-ports dir))
+         (let [e (is (thrown? clojure.lang.ExceptionInfo (discovery/connect dir)))]
+           (is (= ::nrepl/no-server (:type (ex-data e))))
+           (is (re-find #"No nREPL port file" (ex-message e))))))
+     (testing "stale port files are skipped"
+       (spit-file dir ".nrepl-port" (str *port*))
+       (spit-file dir "app/.nrepl-port" (str (test-server/free-port)))
+       (let [client (discovery/connect (io/file dir "app"))]
+         (try
+           (is (= (str "127.0.0.1:" *port*) (:address client)))
+           (finally
+             (nrepl/close client)))))
+     (testing "only stale port files"
+       (spit-file dir ".nrepl-port" (str (test-server/free-port)))
+       (let [e (is (thrown? clojure.lang.ExceptionInfo (discovery/connect (io/file dir "app"))))]
+         (is (= ::nrepl/no-server (:type (ex-data e))))
+         (is (re-find #"No nREPL server answering at the ports in .*app" (ex-message e))))))))

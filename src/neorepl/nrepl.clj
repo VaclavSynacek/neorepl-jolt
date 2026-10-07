@@ -130,21 +130,21 @@
   handler throws (by default it's printed to stderr).
 
   The client carries the server's :ops (a set of op names) and :versions, as
-  reported by describe."
+  reported by describe, and its :address (host:port or the socket path)."
   [{:keys [url on-unclaimed on-error]
     :or {on-unclaimed (fn [_])
          on-error #(binding [*out* *err*] (println "neorepl: response handler failed:" (str %)))}
     :as opts}]
   (let [{:keys [host port socket] :or {host "127.0.0.1"} :as where} (if url (parse-url url) opts)
-        no-server #(ex-info (str "No nREPL server answering at " (or socket (str host ":" port)))
-                            {:type ::no-server}
-                            %)
+        address (or socket (str host ":" port))
+        no-server #(ex-info (str "No nREPL server answering at " address) {:type ::no-server} %)
         client (try
                  (open (assoc where :host host) on-unclaimed on-error)
                  (catch Exception e (throw (no-server e))))]
     (try
       (let [{:keys [ops versions]} (apply merge (request client {:op "describe"}))]
         (assoc client
+               :address address
                ;; The transport turns op names into keywords: cider/info into :cider/info.
                :ops (set (map (comp str symbol) (keys ops)))
                :versions versions))
