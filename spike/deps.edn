@@ -1,0 +1,4 @@
+{:paths ["."]
+ :deps {nrepl/nrepl {:mvn/version "1.8.0"}
+        org.jline/jline {:mvn/version "4.4.7"}}
+ :aliases {:clj-1.10 {:override-deps {org.clojure/clojure {:mvn/version "1.10.3"}}}}}
