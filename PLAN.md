@@ -39,7 +39,7 @@ Neither tries to be an nREPL-first tool with CIDER's tooling, jack-in, and a CLI
 
 ### Runtime: JVM and babashka
 
-Both are first-class. babashka 1.13.221+ bundles everything we need: JLine 4 (4.4.7 in 1.13.225), and nREPL 1.7's `nrepl.core`, `nrepl.transport` and `nrepl.server` running from source. The same code runs on both with nothing declared in `bb.edn`.
+Both are first-class. babashka 1.13.225+ bundles everything we need: JLine 4 (4.4.7), and nREPL 1.7's `nrepl.core`, `nrepl.transport` and `nrepl.server` running from source. JLine 4 arrived in 1.13.221, but `Terminal$Signal`, which the REPL's Ctrl-C handling needs, only in 1.13.225. The same code runs on both with nothing declared in `bb.edn`.
 
 That matters most for the CLI. Every agent call is a fresh process, and bb starts in a few dozen milliseconds instead of a second-plus for a JVM. It also means we don't need GraalVM native-image builds, at least for now.
 
@@ -58,7 +58,7 @@ Runtime deps: `org.clojure/clojure`, `nrepl/nrepl`, `org.jline/jline` 4.x. That'
 
 - Servers: anything that speaks nREPL. For Clojure, 1.10+ (nREPL 1.8's floor), on whatever Java the project uses.
 - Client on the JVM: Java 17+, Clojure 1.10+. JLine 4 itself only needs 11, but JDK 22+ warns about JLine's native access unless the JVM gets `--enable-native-access=ALL-UNNAMED`, and that flag only exists since 17. With a 17 floor every launcher (aliases, `-T` tool, uberjar) can pass it unconditionally. Client code sticks to 1.10 APIs (no `parse-long`, `update-vals`, ...) because in-process mode runs it inside the project's JVM, which therefore also needs Java 17+.
-- Client on bb: 1.13.221+.
+- Client on bb: 1.13.225+.
 
 ### What we verified (bb 1.13.225, 2026-10-07)
 

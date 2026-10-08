@@ -59,7 +59,7 @@ src/my/app.clj:12:1: Unclosed (
 ## Development
 
 neorepl runs from the same source on the JVM (Java 17+, Clojure 1.10+) and on
-[babashka](https://babashka.org) (1.13.221+). The tests run on both:
+[babashka](https://babashka.org) (1.13.225+). The tests run on both:
 
 ```shell
 bb test             # on babashka
