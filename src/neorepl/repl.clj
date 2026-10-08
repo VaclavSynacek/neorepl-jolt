@@ -6,7 +6,8 @@
             [neorepl.evaluation :as evaluation]
             [neorepl.features :as features]
             [neorepl.lexer :as lexer]
-            [neorepl.nrepl :as nrepl])
+            [neorepl.nrepl :as nrepl]
+            [neorepl.render :as render])
   (:import (java.security MessageDigest)
            (sun.misc Signal SignalHandler)))
 
@@ -165,12 +166,12 @@
               (when-let [{:keys [end text]} (token-at lexer/enclosing-op text cursor)]
                 ;; Not while the function's name is still being typed.
                 (when (< end cursor)
-                  (some-> (info text) features/eldoc-text))))
+                  (some-> (info text) render/eldoc-text))))
      :doc (fn [text cursor]
             (let [at (token-at lexer/symbol-at text cursor)
                   ;; Keywords and constants have no docs, but the call they're in might.
                   token (if (= :symbol (:type at)) at (token-at lexer/enclosing-op text cursor))]
-              (some-> token :text info features/doc-text)))
+              (some-> token :text info render/doc-text)))
      :in-ns (fn [ns]
               (reset! current-ns ns)
               (reset! cached (memoize lookup)))}))

@@ -8,6 +8,7 @@
             [neorepl.features :as features]
             [neorepl.json :as json]
             [neorepl.lexer :as lexer]
+            [neorepl.lookups :as lookups]
             [neorepl.nrepl :as nrepl]
             [neorepl.sessions :as sessions]
             [neorepl.xdg :as xdg])
@@ -421,23 +422,23 @@ when there's no server to talk to."
   neorepl doc map
   neorepl doc --ns my.app str/join"))
 
-(defn- report-found
-  "Prints what a lookup found in format, as text through text, and returns
-  the exit status: 0, or 1 after reporting message when it found nothing."
-  [format found text message]
-  (if found
-    (do (if (= "text" format)
-          (println (text found))
-          (emit format found))
-        0)
-    (do (report format {:status "not-found" :message message})
-        1)))
+(defn- report-lookup
+  "Does the lookup called name, see neorepl.lookups, and prints what it found
+  in format. Returns the exit status: 0, or 1 when it found nothing."
+  [format name client ctx arg]
+  (let [{:keys [found text none]} (lookups/run name client ctx arg)]
+    (if found
+      (do (if (= "text" format)
+            (println text)
+            (emit format found))
+          0)
+      (do (report format {:status "not-found" :message none})
+          1))))
 
 (defn- doc-command [{:keys [ns format] :as options} args {:keys [dir]}]
   (let [sym (the-arg args "SYM")]
     (with-client options dir
-      #(report-found format (features/info % sym ns) features/doc-text
-                     (str "Nothing called " sym " in " ns)))))
+      #(report-lookup format "doc" % {:ns ns} sym))))
 
 (def ^:private source-help
   (help-text
@@ -454,8 +455,7 @@ and 3 when there's no server to talk to."
 (defn- source-command [{:keys [ns format] :as options} args {:keys [dir]}]
   (let [sym (the-arg args "SYM")]
     (with-client options dir
-      #(report-found format (some->> (features/source % sym ns) (hash-map :source)) :source
-                     (str "No source for " sym " in " ns)))))
+      #(report-lookup format "source" % {:ns ns} sym))))
 
 (def ^:private complete-help
   (help-text
@@ -484,6 +484,8 @@ them."
    "Lists the vars, in every loaded namespace, whose names match REGEX."
    apropos-options
    discovery-note
+   "Exit status: 0 when something matches, 1 when nothing does, 2 on usage
+errors and 3 when there's no server to talk to."
    "Examples:
   neorepl apropos split
   neorepl apropos --format json '^map'"))
@@ -491,11 +493,57 @@ them."
 (defn- apropos-command [{:keys [format] :as options} args {:keys [dir]}]
   (let [regex (the-arg args "REGEX")]
     (with-client options dir
-      (fn [client]
-        (print-rows format
-                    (juxt :name #(str (some-> (:doc %) str/split-lines first)))
-                    (features/apropos client regex))
-        0))))
+      #(report-lookup format "apropos" % {} regex))))
+
+(def ^:private macroexpand-options
+  (concat connection-options
+          [(assoc ns-option :doc "Expand in the namespace NS (default: user)")
+           {:long "--all"
+            :doc "Expand every macro in FORM, not just FORM itself"}]
+          common-options))
+
+(def ^:private macroexpand-help
+  (help-text
+   "Usage: neorepl macroexpand [options] FORM"
+   "Expands the macro that FORM calls, once, the way macroexpand-1 does. With
+--all, it expands every macro in FORM instead, all the way down."
+   macroexpand-options
+   discovery-note
+   "Examples:
+  neorepl macroexpand '(when x (println x))'
+  neorepl macroexpand --all '(-> x f (g y))'"))
+
+(defn- macroexpand-command [{:keys [ns all format] :as options} args {:keys [dir]}]
+  (let [form (the-arg args "FORM")]
+    (with-client options dir
+      #(report-lookup format (if all "macroexpand-all" "macroexpand") % {:ns ns} form))))
+
+(def ^:private pst-options
+  (concat connection-options [session-option] common-options))
+
+(def ^:private pst-help
+  (help-text
+   "Usage: neorepl pst [options]"
+   "Prints the stack trace of the last error in a session, the way
+clojure.repl/pst does: the session neorepl eval calls share, or the one
+--session names. --format edn and json have each cause's class, message,
+ex-data and stack frames."
+   pst-options
+   discovery-note
+   "Exit status: 0 when there's an error to print, 1 when there's none, 2 on
+usage errors and 3 when there's no server to talk to."
+   "Examples:
+  neorepl pst
+  neorepl pst --session agent --format json"))
+
+(defn- pst-command [{:keys [session format] :as options} args {:keys [dir sessions-file]}]
+  (reject-args args)
+  (with-client options dir
+    (fn [client]
+      (if-let [id (get (sessions/named sessions-file client) session)]
+        (report-lookup format "pst" client {:session id :session-name session} nil)
+        (do (report format (no-session session))
+            1)))))
 
 (def ^:private repl-options
   (concat connection-options
@@ -561,6 +609,10 @@ server to talk to or the connection to it drops."
     :main complete-command}
    {:name "apropos" :summary "Find vars by name" :options apropos-options :help apropos-help
     :main apropos-command}
+   {:name "macroexpand" :summary "Expand macros" :options macroexpand-options :help macroexpand-help
+    :main macroexpand-command}
+   {:name "pst" :summary "Print the last error's stack trace" :options pst-options :help pst-help
+    :main pst-command}
    {:name "interrupt" :summary "Interrupt an evaluation" :options interrupt-options :help interrupt-help
     :main interrupt-command}
    {:name "sessions" :summary "List or close sessions" :options sessions-options :help sessions-help

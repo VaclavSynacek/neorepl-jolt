@@ -49,13 +49,15 @@ your changes into the running program after editing it:
 neorepl load src/my/app.clj
 ```
 
-`neorepl doc`, `neorepl source`, `neorepl complete` and `neorepl apropos` look
-things up the way their `clojure.repl` namesakes do, using cider-nrepl when
-the server has it:
+`neorepl doc`, `neorepl source`, `neorepl apropos` and `neorepl pst` do what
+their `clojure.repl` namesakes do, `neorepl macroexpand` expands macros and
+`neorepl complete` lists completions, all using cider-nrepl when the server
+has it:
 
 ```shell
 neorepl doc map
 neorepl source --ns my.app my.app/start
+neorepl pst --format json
 ```
 
 `neorepl check` finds unbalanced parens, brackets and braces, the most

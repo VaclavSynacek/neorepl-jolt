@@ -2,6 +2,7 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [are deftest is testing use-fixtures]]
             [neorepl.features :as features]
+            [neorepl.nrepl :as nrepl]
             [neorepl.test-server :as test-server :refer [*port* with-client]]
             [nrepl.middleware :as middleware]
             [nrepl.server :as server]
@@ -27,9 +28,18 @@
       "apropos" (transport/respond-to msg :status "done"
                                       :apropos-matches [{:name "clojure.core/map" :type "function"
                                                          :doc "Cider's map.\nMore."}])
+      "macroexpand" (transport/respond-to msg :status "done" :expansion (str "Cider's " (:expander msg)))
+      "analyze-last-stacktrace" (do (transport/respond-to msg :class "clojure.lang.ExceptionInfo" :message "boom"
+                                                          :data "{:k 1}" :phase "execution"
+                                                          :stacktrace [{:name "user/f" :file "x.clj" :line 1
+                                                                        :file-url []}])
+                                    (transport/respond-to msg :class "java.lang.Exception" :message []
+                                                          :stacktrace [])
+                                    (transport/respond-to msg :status "done"))
       (handler msg))))
 
-(middleware/set-descriptor! #'wrap-fake-cider {:handles {"info" {} "complete" {} "apropos" {}}})
+(middleware/set-descriptor! #'wrap-fake-cider {:handles {"info" {} "complete" {} "apropos" {}
+                                                         "macroexpand" {} "analyze-last-stacktrace" {}}})
 
 (defn- without
   "client, pretending its server doesn't have ops."
@@ -61,22 +71,6 @@
           (is (= "(Classname/staticMethod args*) Classname/staticField"
                  (->> (features/info client "." "user") :forms (take-last 2) (str/join " ")))))))))
 
-(deftest text-test
-  (testing "like clojure.repl/doc"
-    (is (= "clojure.core/map\n([f] [f coll])\n  Maps."
-           (features/doc-text {:ns "clojure.core" :name "map" :arglists ["[f]" "[f coll]"] :doc "Maps."})))
-    (is (= "when\n([test & body])\nMacro"
-           (features/doc-text {:name "when" :arglists ["[test & body]"] :macro true})))
-    (is (= "if\n  (if test then else?)\nSpecial Form"
-           (features/doc-text {:name "if" :forms ["(if test then else?)"] :special-form true})))
-    (is (= "let\n  (let [bindings*] exprs*)\nSpecial Form"
-           (features/doc-text {:name "let" :forms ["(let [bindings*] exprs*)"] :special-form true :macro true}))))
-  (testing "eldoc"
-    (are [info text] (= text (features/eldoc-text info))
-      {:arglists ["[f]" "[f coll]"]} "[f] [f coll]"
-      {:forms ["(if test then else?)"]} "(if test then else?)"
-      {:name "cfg"} nil)))
-
 (deftest complete-test
   (with-client [client {:port *port*}]
     ;; Only the JVM's nREPL says what type a candidate is.
@@ -93,6 +87,39 @@
 (deftest apropos-test
   (with-client [client {:port *port*}]
     (is (some #{{:name "clojure.core/mapcat"}} (features/apropos client "^mapc")))))
+
+(deftest expand-test
+  (with-client [client {:port *port*}]
+    (is (= "(if x (do y))" (features/expand client "(when x y)" "user" false)))
+    (is (str/includes? (features/expand client "(when-let [a 1] a)" "user" true) "let*"))
+    (testing "one form, only ever read, not evaluated"
+      (are [text] (= ::features/failed
+                     (:type (ex-data (is (thrown? clojure.lang.ExceptionInfo (features/expand client text "user" false))))))
+        "#=(System/exit 1)"
+        "(when x y) (+ 1 2)"
+        "x) (spit \"/tmp/p\" 1"
+        ""))))
+
+(deftest last-error-test
+  (with-client [client {:port *port*}]
+    (let [session (nrepl/clone-session client)]
+      (testing "nothing yet"
+        (is (nil? (features/last-error client session))))
+      (nrepl/request client {:op "eval" :session session
+                             :code "(defn boom [] (throw (ex-info \"boom\" {:k 1} (ArithmeticException. \"inner\")))) (boom)"})
+      (let [[outer inner :as causes] (features/last-error client session)]
+        (is (= 2 (count causes)))
+        (is (= {:class "clojure.lang.ExceptionInfo" :message "boom" :data "{:k 1}"}
+               (select-keys outer [:class :message :data])))
+        (is (= {:class "java.lang.ArithmeticException" :message "inner"}
+               (select-keys inner [:class :message])))
+        (is (seq (:stacktrace inner)))
+        (testing "with frames that follow on in the same function flagged dup"
+          (let [shown (remove #(some #{"dup" "tooling"} (:flags %)) (:stacktrace inner))
+                fn-of #(first (str/split (:name %) #"/"))]
+            (is (every? (fn [[a b]] (not= (fn-of a) (fn-of b))) (partition 2 1 shown))))))
+      (testing "leaves the session's *1 alone"
+        (is (= ["#'user/boom"] (keep :value (nrepl/request client {:op "eval" :session session :code "*1"}))))))))
 
 (deftest error-test
   (with-client [client {:port *port*}]
@@ -116,6 +143,12 @@
           (is (= [{:candidate "map" :type "function" :ns "clojure.core"}]
                  (features/complete client "ma" "user")))
           (is (= [{:name "clojure.core/map" :type "function" :doc "Cider's map.\nMore."}]
-                 (features/apropos client "map")))))
+                 (features/apropos client "map")))
+          (is (= "Cider's macroexpand-all" (features/expand client "(when x y)" "user" true)))
+          (is (= [{:class "clojure.lang.ExceptionInfo" :message "boom" :data "{:k 1}"
+                   :stacktrace [{:name "user/f" :file "x.clj" :line 1}]}
+                  ;; cider-nrepl sends nil as an empty list.
+                  {:class "java.lang.Exception" :message nil :data nil :stacktrace []}]
+                 (features/last-error client (nrepl/clone-session client))))))
       (finally
         (server/stop-server srv)))))

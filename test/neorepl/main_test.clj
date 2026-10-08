@@ -299,10 +299,37 @@
 
 (deftest apropos-test
   (is (re-find #"(?m)^clojure\.core/mapcat$" (:out (run-command "apropos" "^mapc"))))
+  (testing "nothing matching"
+    (is (= {:status 1 :out "" :err "neorepl: Nothing matches ^nope-nope$\n"}
+           (run-command "apropos" "^nope-nope$"))))
   (testing "a regex the server can't make sense of"
     (let [{:keys [status err]} (run-command "apropos" "(")]
       (is (= 1 status))
       (is (str/includes? err "The server couldn't do eval")))))
+
+(deftest macroexpand-test
+  (is (= {:status 0 :out "(if x (do y))\n" :err ""} (run-command "macroexpand" "(when x y)")))
+  (is (str/includes? (:out (run-command "macroexpand" "--all" "(when-let [a 1] a)")) "let*"))
+  (is (= {:expansion "(if x (do y))"}
+         (edn/read-string (:out (run-command "macroexpand" "--format" "edn" "(when x y)"))))))
+
+(deftest pst-test
+  (run "-s" "pst" "(throw (ex-info \"boom\" {:k 1}))")
+  (let [{:keys [status out]} (run-command "pst" "-s" "pst")]
+    (is (zero? status))
+    (is (str/starts-with? out "clojure.lang.ExceptionInfo: boom\n  {:k 1}\n")))
+  (is (= "clojure.lang.ExceptionInfo"
+         (:class (first (edn/read-string (:out (run-command "pst" "-s" "pst" "--format" "edn")))))))
+  (testing "no error yet"
+    (run "-s" "pst-clean" "1")
+    (is (= {:status 1 :out "" :err "neorepl: No error yet in session pst-clean\n"}
+           (run-command "pst" "-s" "pst-clean"))))
+  (testing "no such session"
+    (is (= 1 (:status (run-command "pst" "-s" "pst-nope")))))
+  (testing "whatever the session's print settings"
+    (run "-s" "pst-short" "(set! *print-length* 2) (set! *print-level* 1)")
+    (run "-s" "pst-short" "(throw (ex-info \"boom\" {:xs (range) :deep {:er 1}}))")
+    (is (str/starts-with? (:out (run-command "pst" "-s" "pst-short")) "clojure.lang.ExceptionInfo: boom\n"))))
 
 (deftest discovery-test
   (call-with-temp-dir
@@ -433,4 +460,6 @@
     ["doc" "--help"] "Usage: neorepl doc"
     ["source" "--help"] "Usage: neorepl source"
     ["complete" "--help"] "Usage: neorepl complete"
-    ["apropos" "--help"] "Usage: neorepl apropos"))
+    ["apropos" "--help"] "Usage: neorepl apropos"
+    ["macroexpand" "--help"] "Usage: neorepl macroexpand"
+    ["pst" "--help"] "Usage: neorepl pst"))

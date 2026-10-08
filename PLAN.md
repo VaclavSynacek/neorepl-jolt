@@ -154,6 +154,7 @@ src/neorepl/
   sessions.clj      named sessions that outlive CLI calls
   discovery.clj     port files, liveness checks
   features.clj      the feature ladder; the API every front end uses
+  lookups.clj       the lookups the CLI's commands and the REPL's share
   jack_in.clj       project detection, server command building, process lifecycle
   lexer.clj         completeness, highlighting, symbol at point, delimiter checks
   editor.cljc       JLine glue; the only namespace that imports org.jline

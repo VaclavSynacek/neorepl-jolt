@@ -17,12 +17,12 @@
 
 (defn- ask
   "Sends msg and returns its responses, throwing ::failed when the server
-  reports an error: a status ending in error, as eval-error and cider-nrepl's
-  info-error do."
+  reports an error: a status ending in error, as eval-error and
+  cider-nrepl's info-error do, other than its no-error."
   [client msg opts]
   (let [responses (nrepl/request client msg opts)
         statuses (into #{} (mapcat :status) responses)]
-    (when (some #(str/ends-with? % "error") statuses)
+    (when (some #(and (str/ends-with? % "error") (not= "no-error" %)) statuses)
       (throw (ex-info (str "The server couldn't do " (:op msg)
                            (when-let [err (some-> (keep :err responses) seq str/join str/trim)]
                              (str ": " err)))
@@ -30,13 +30,13 @@
     responses))
 
 (defn- eval-data
-  "Evaluates the code that (format template args...) makes, in ns, and returns
-  its value, which has to be plain data, read back. The args go in as string
-  literals, so they can't be code: the template turns them into what it
-  needs, as with (symbol %s)."
-  [client ns template args opts]
+  "Evaluates the code that (format template args...) makes and returns its
+  value, which has to be plain data, read back. msg says where: its :ns, or
+  its :session. The args go in as string literals, so they can't be code:
+  the template turns them into what it needs, as with (symbol %s)."
+  [client msg template args opts]
   (some->> (ask client
-                {:op "eval" :ns ns :code (apply format template (map pr-str args))}
+                (assoc msg :op "eval" :code (apply format template (map pr-str args)))
                 opts)
            (some :value)
            edn/read-string))
@@ -92,7 +92,7 @@
          (normalize-info info)))
 
      :else
-     (some-> (eval-data client ns "(when-let [m (meta (resolve (symbol %s)))]
+     (some-> (eval-data client {:ns ns} "(when-let [m (meta (resolve (symbol %s)))]
                                     {:ns (str (:ns m))
                                      :name (str (:name m))
                                      :arglists-str (some->> (:arglists m) (map pr-str) (interpose \"\\n\") (apply str))
@@ -103,24 +103,6 @@
                                      :macro (:macro m)})"
                         [sym] opts)
              normalize-info))))
-
-(defn doc-text
-  "info as text, the way clojure.repl/doc prints it, minus the dashes."
-  [{:keys [ns name arglists forms macro special-form doc]}]
-  (str/join "\n" (concat [(str (some-> ns (str "/")) name)]
-                         (if forms
-                           (map #(str "  " %) forms)
-                           (some->> arglists (str/join " ") (format "(%s)") vector))
-                         (cond
-                           special-form ["Special Form"]
-                           macro ["Macro"])
-                         (some->> doc (str "  ") vector))))
-
-(defn eldoc-text
-  "What to show while the function info describes is being called: its
-  arglists, or a special form's shapes. Nil when there are none."
-  [{:keys [arglists forms]}]
-  (some->> (or forms arglists) seq (str/join " ")))
 
 (defn complete
   "The completions for prefix in the namespace ns, as maps with the
@@ -137,7 +119,7 @@
   server can't find it."
   ([client sym ns] (source client sym ns {}))
   ([client sym ns opts]
-   (eval-data client ns "(do (require 'clojure.repl) (clojure.repl/source-fn (symbol %s)))" [sym] opts)))
+   (eval-data client {:ns ns} "(do (require 'clojure.repl) (clojure.repl/source-fn (symbol %s)))" [sym] opts)))
 
 (defn apropos
   "The vars whose names match the regex, as maps with the :name and, when
@@ -148,6 +130,107 @@
      (->> (ask client {:op "apropos" :query regex} opts)
           (some :apropos-matches)
           (mapv #(select-keys % [:name :type :doc])))
-     (->> (eval-data client "user" "(do (require 'clojure.repl) (map str (clojure.repl/apropos (re-pattern %s))))"
+     (->> (eval-data client {:ns "user"} "(do (require 'clojure.repl) (map str (clojure.repl/apropos (re-pattern %s))))"
                      [regex] opts)
           (mapv #(hash-map :name %))))))
+
+(defn- one-form
+  "Throws unless text is a single form the reader can take without
+  evaluating anything, the way #= would. cider-nrepl evaluates what it
+  expands with *read-eval* on."
+  [text]
+  (when-not (and (= 1 (count (lexer/forms text)))
+                 (not (str/includes? text "#=")))
+    (throw (ex-info "Give one form to expand, without #=" {:type ::failed}))))
+
+(defn expand
+  "The form in text with macros expanded in the namespace ns, pretty printed:
+  just the form itself, the way macroexpand-1 does, or every macro in it with
+  all?"
+  ([client text ns all?] (expand client text ns all? {}))
+  ([client text ns all? opts]
+   (one-form text)
+   (if (supports? client "macroexpand")
+     (->> (ask client {:op "macroexpand"
+                       :code text
+                       :ns ns
+                       :expander (if all? "macroexpand-all" "macroexpand-1")
+                       ;; Without the namespaces of what the namespace refers.
+                       :display-namespaces "tidy"}
+               opts)
+          (some :expansion))
+     (some-> (eval-data client {:ns ns}
+                        "(do (require 'clojure.pprint 'clojure.walk)
+                             (with-out-str
+                               (clojure.pprint/pprint
+                                 ((if %s clojure.walk/macroexpand-all macroexpand-1)
+                                  (binding [*read-eval* false] (read-string %s))))))"
+                        [all? text] opts)
+             str/trimr))))
+
+(defn- blank->nil
+  "cider-nrepl sends nil as an empty list, babashka as an empty string."
+  [x]
+  (when-not (or (and (string? x) (str/blank? x)) (and (coll? x) (empty? x)))
+    x))
+
+(defn- dups
+  "Flags the frames that call on from one before them in the same function,
+  the way cider-nrepl does, as dup."
+  [frames]
+  (let [fn-of #(first (str/split (str (:name %)) #"/"))]
+    (into (vec (take 1 frames))
+          (map (fn [previous frame]
+                 (cond-> frame (= (fn-of previous) (fn-of frame)) (update :flags (fnil conj []) "dup")))
+               frames (rest frames)))))
+
+(defn last-error
+  "The last error in session, as its causes, outermost first: maps with the
+  :class, the :message, ex-data as :data text and the :stacktrace, frames with
+  a :name, :file and :line, and :flags saying what kind of frame it is, like
+  tooling for the frames running the code rather than of it. Nil when
+  nothing's gone wrong yet."
+  ([client session] (last-error client session {}))
+  ([client session opts]
+   (some->>
+    (if (supports? client "analyze-last-stacktrace")
+      (->> (ask client {:op "analyze-last-stacktrace" :session session} opts)
+           (filter :class))
+      ;; *e is in the session, so the code looking at it has to run there,
+      ;; in a copy, so the session's *1 stays put.
+      (let [copy (try
+                   (nrepl/clone-session client session)
+                   (catch clojure.lang.ExceptionInfo e
+                     (throw (ex-info "The server couldn't copy the session" {:type ::failed} e))))
+            ;; What runs the code rather than the code itself.
+            tooling? #(re-find #"^(clojure\.lang\.Compiler|clojure\.main|nrepl\..+|java\.lang\.Thread)/" (:name %))]
+        (try
+          (some->> (eval-data client {:session copy}
+                              ;; Printed here, with print settings of its own:
+                              ;; the copy has the session's, which could cut it short.
+                              "(when-let [e *e]
+                                 (binding [*print-length* nil *print-level* nil *print-meta* false]
+                                   (let [frame (fn [[class method file line]]
+                                                 {:name (str class \"/\" method) :file file :line line})
+                                         cause (fn [{:keys [type message data at]}]
+                                                 {:class (str type)
+                                                  :message message
+                                                  :data (binding [*print-length* 20 *print-level* 5]
+                                                          (some-> data pr-str))
+                                                  :stacktrace (if at [(frame at)] [])})
+                                         {:keys [via trace]} (Throwable->map e)]
+                                     (pr-str (conj (mapv cause (pop via))
+                                                   (assoc (cause (peek via)) :stacktrace (mapv frame trace)))))))"
+                              [] opts)
+                   edn/read-string
+                   (map (fn [cause]
+                          (update cause :stacktrace
+                                  (partial mapv #(cond-> % (tooling? %) (assoc :flags ["tooling"])))))))
+          (finally
+            (nrepl/close-session client copy)))))
+    (mapv (fn [{:keys [class message data stacktrace]}]
+            {:class class
+             :message (blank->nil message)
+             :data (blank->nil data)
+             :stacktrace (dups (mapv #(select-keys % [:name :file :line :flags]) stacktrace))}))
+    not-empty)))
