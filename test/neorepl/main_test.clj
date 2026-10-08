@@ -273,6 +273,35 @@
          (spit live (str (test-server/free-port)))
          (is (= 3 (:status (run-in app "" "ports")))))))))
 
+(deftest check-test
+  (let [good (str (spit-file *dir* "check/good.clj" "(ns good)\n\n(defn f [x]\n  (str \"(\" x))\n"))
+        unclosed (str (spit-file *dir* "check/unclosed.clj" "(ns unclosed)\n\n(defn f [x]\n  (inc x)\n"))
+        mismatched (str (spit-file *dir* "check/mismatched.clj" "(let [x 1)\n  x)"))]
+    (testing "all good"
+      (is (= {:status 0 :out "" :err ""} (run-in *dir* "" "check" good))))
+    (testing "a problem per file"
+      (is (= {:status 1
+              :out (str unclosed ":3:1: Unclosed (\n"
+                        mismatched ":1:10: Mismatched ): expected ] to close the [ at 1:6\n")
+              :err ""}
+             (run-in *dir* "" "check" good unclosed mismatched))))
+    (testing "files that can't be read are problems too"
+      (is (= {:status 1
+              :out (str "/does/not/exist.clj: No such file\n"
+                        *dir* ": Can't read the file\n"
+                        unclosed ":3:1: Unclosed (\n")
+              :err ""}
+             (run-in *dir* "" "check" good "/does/not/exist.clj" (str *dir*) unclosed))))
+    (testing "standard input"
+      (is (= {:status 1 :out "<stdin>:1:8: Unmatched )\n" :err ""}
+             (run-in *dir* "(+ 1 2))" "check" "-")))
+      (is (= {:status 1 :out "<stdin>:1:6: Unterminated string\n" :err ""}
+             (run-in *dir* "(str \"abc)" "check" "-"))))
+    (testing "structured"
+      (is (= [{:file unclosed :line 3 :column 1 :message "Unclosed ("}]
+             (edn/read-string (:out (run-in *dir* "" "check" "--format" "edn" good unclosed)))))
+      (is (= "[]\n" (:out (run-in *dir* "" "check" "--format" "json" good)))))))
+
 (deftest errors-test
   (testing "usage errors"
     (are [args message] (let [{:keys [status out err]} (apply run-in *dir* "" args)]
@@ -306,6 +335,7 @@
       ["sessions" "-p" "1" "close" "a" "b"] "Unexpected argument: b"
       ["ports" "here"] "Unexpected argument: here"
       ["ports" "-p" "1"] "Unknown option: -p"
+      ["check"] "Nothing to check"
       ["evil"] "Unknown command: evil"))
   (testing "usage errors point at the right help"
     (is (str/includes? (:err (run-in *dir* "" "load" "--bogus")) "Run neorepl load --help"))
@@ -326,4 +356,5 @@
     ["load" "--help"] "Usage: neorepl load"
     ["interrupt" "--help"] "Usage: neorepl interrupt"
     ["sessions" "--help"] "Usage: neorepl sessions"
-    ["ports" "--help"] "Usage: neorepl ports"))
+    ["ports" "--help"] "Usage: neorepl ports"
+    ["check" "--help"] "Usage: neorepl check"))

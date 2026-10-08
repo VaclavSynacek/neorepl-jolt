@@ -142,3 +142,35 @@
     "inc" 3 nil
     "(ma" 3 "ma"
     "(let [x 1) (" 12 nil))
+
+(deftest delimiter-error-test
+  (letfn [(error [s]
+            ;; With the tokens' text in place of the tokens.
+            (when-let [e (lexer/delimiter-error (lexer/lex s))]
+              (into {} (for [[k v] e] [k (if (map? v) (lexer/text s v) v)]))))]
+    (testing "balanced"
+      (are [s] (nil? (error s))
+        ""
+        "(defn f [x] (inc x))"
+        "(str \\( \")\" #\"[\") ; ]\n{:a #{1}}"
+        "#_(a) #(+ % 1) #?(:clj [1])"))
+    (testing "problems"
+      (are [s expected] (= expected (error s))
+        "(defn f [x]\n  (inc x)" {:error :unclosed :open "("}
+        "(let [x 1) x)" {:error :mismatched :open "[" :close ")" :expected "]"}
+        "(+ 1 2))" {:error :unmatched :close ")"}
+        "(str \"abc)" {:error :open-string :open "\"abc)"}
+        "#{1 2" {:error :unclosed :open "#{"}))
+    (testing "the outermost delimiter left open"
+      (is (= 0 (:start (:open (lexer/delimiter-error (lexer/lex "(a (b [c]"))))))))
+  (testing "the first problem wins"
+    (is (= :unmatched (:error (lexer/delimiter-error (lexer/lex ") (")))))))
+
+(deftest position-test
+  (are [s index pos] (= pos (lexer/position s index))
+    "abc" 0 [1 1]
+    "abc" 2 [1 3]
+    "a\nbc" 3 [2 2]
+    "a\n" 2 [2 1]
+    "a\n\n(" 3 [3 1]
+    "\uD83D\uDE00(" 2 [1 2]))

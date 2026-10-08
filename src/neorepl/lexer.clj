@@ -129,16 +129,18 @@
   "Walks tokens keeping a stack of frames, the top level first and then one
   per open delimiter: {:open index-of-the-delimiter-token :prefixes [...]}.
   :prefixes holds how many forms each pending prefix (' #_ ^ #inst ...) still
-  needs. Nil when a closing delimiter doesn't match its opener or has none."
+  needs. When a closing delimiter doesn't match its opener or has none, it
+  stops there and returns the error as a map, the way delimiter-error does."
   [s tokens]
   (reduce-kv
    (fn [frames i {:keys [type] :as token}]
      (case type
        :open (conj frames {:open i :prefixes []})
-       :close (let [open (:open (peek frames))]
-                (if (and open (= (text s token) (closer s (tokens open))))
-                  (update-prefixes (pop frames) form-done)
-                  (reduced nil)))
+       :close (let [open (some->> (peek frames) :open (get tokens))]
+                (cond
+                  (nil? open) (reduced {:error :unmatched :close token})
+                  (= (text s token) (closer s open)) (update-prefixes (pop frames) form-done)
+                  :else (reduced {:error :mismatched :open open :close token :expected (closer s open)})))
        (:macro-char :discard :reader-macro)
        (update-prefixes frames conj (if (= "^" (text s token)) 2 1))
        :comment frames
@@ -154,7 +156,7 @@
   (let [frames (scan-forms text tokens)]
     (boolean
      (or (= :open-string (:type (peek tokens)))
-         (and frames (or (next frames) (seq (:prefixes (first frames)))))))))
+         (and (vector? frames) (or (next frames) (seq (:prefixes (first frames)))))))))
 
 (def ^:private symbolic-types #{:symbol :keyword :constant})
 
@@ -171,11 +173,39 @@
   cursor, e.g. `map` for \"(map inc |\" and `let` for \"(let [x |\". Nil
   outside of lists and when the head of the list isn't a symbol."
   [{:keys [text tokens]} cursor]
-  (let [before (into [] (take-while #(< (:start %) cursor)) tokens)]
-    (when-let [i (->> (scan-forms text before)
-                      (keep :open)
-                      (filter #(= ")" (closer text (before %))))
-                      last)]
+  (let [before (into [] (take-while #(< (:start %) cursor)) tokens)
+        frames (scan-forms text before)]
+    (when-let [i (when (vector? frames)
+                   (->> frames
+                        (keep :open)
+                        (filter #(= ")" (closer text (before %))))
+                        last))]
       (let [head (get before (inc i))]
         (when (= :symbol (:type head))
           head)))))
+
+(defn delimiter-error
+  "The first delimiter in the lexed text that doesn't balance, or nil when
+  they all do. A map with the kind of :error and the tokens involved:
+
+    :unclosed     the :open delimiter, the outermost one left open
+    :mismatched   the :close delimiter, the :open one it doesn't match and
+                  the closer that one :expected
+    :unmatched    a :close delimiter with nothing to close
+    :open-string  the :open string or regex that never ends"
+  [{s :text :keys [tokens]}]
+  (let [frames (scan-forms s tokens)]
+    (cond
+      (map? frames) frames
+      ;; Always the last token, so anything else went wrong before it.
+      (= :open-string (:type (peek tokens))) {:error :open-string :open (peek tokens)}
+      (next frames) {:error :unclosed :open (tokens (:open (second frames)))})))
+
+(defn position
+  "The line and column, both counting from 1, of index in s. Columns count
+  characters the way editors do, with surrogate pairs as one."
+  [^String s index]
+  (let [before (subs s 0 index)
+        line-start (inc (.lastIndexOf before "\n"))]
+    [(inc (count (filter #{\newline} before)))
+     (inc (.codePointCount before (int line-start) (int index)))]))

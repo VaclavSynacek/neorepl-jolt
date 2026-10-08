@@ -5,9 +5,10 @@
             [neorepl.cli :as cli]
             [neorepl.discovery :as discovery]
             [neorepl.json :as json]
+            [neorepl.lexer :as lexer]
             [neorepl.nrepl :as nrepl]
             [neorepl.sessions :as sessions])
-  (:import (java.io File)
+  (:import (java.io File IOException)
            (java.util.concurrent LinkedBlockingQueue TimeUnit)))
 
 (defn- usage-error [msg]
@@ -437,6 +438,67 @@ does."
       (emit format ports))
     (if (some :live ports) 0 3)))
 
+(def ^:private check-options common-options)
+
+(def ^:private check-help
+  (help-text
+   "Usage: neorepl check [options] FILE...
+       neorepl check [options] -"
+   "Checks that the parens, brackets and braces in Clojure source balance and
+that its strings end, and reports the first problem in each file. Standard
+input stands in for a file as -. No server needed."
+   check-options
+   "Exit status: 0 when everything balances, 1 when something doesn't or a file
+can't be read and 2 on usage errors."
+   "Examples:
+  neorepl check src/my/app.clj
+  neorepl check --format json $(git ls-files '*.clj')"))
+
+(defn- delimiter-problem
+  "The first delimiter that doesn't balance in text, as a map with its :line,
+  :column and a :message, or nil."
+  [text]
+  (when-let [{:keys [error open close expected]} (lexer/delimiter-error (lexer/lex text))]
+    (let [at #(lexer/position text (:start %))
+          [line column] (at (or close open))
+          delimiter #(lexer/text text %)]
+      {:line line
+       :column column
+       :message (case error
+                  :unclosed (str "Unclosed " (delimiter open))
+                  :unmatched (str "Unmatched " (delimiter close))
+                  :mismatched (format "Mismatched %s: expected %s to close the %s at %s"
+                                      (delimiter close) expected (delimiter open) (str/join ":" (at open)))
+                  :open-string (if (str/starts-with? (delimiter open) "#")
+                                 "Unterminated regex"
+                                 "Unterminated string"))})))
+
+(defn- check-file
+  "The first delimiter problem in the file at path, or standard input for -,
+  as delimiter-problem has it plus the :file. When the file can't be read,
+  that's the problem, with only a :message."
+  [path]
+  (let [stdin? (= "-" path)
+        text (if stdin? (slurp *in*) (try (slurp path) (catch IOException _ nil)))]
+    (some->> (if text
+               (delimiter-problem text)
+               {:message (if (.exists (io/file path)) "Can't read the file" "No such file")})
+             (into {:file (if stdin? "<stdin>" path)}))))
+
+(defn- check-command [{:keys [format]} args _]
+  (when (empty? args)
+    (throw (usage-error "Nothing to check")))
+  (let [problems (reduce (fn [problems {:keys [file line column message] :as problem}]
+                           (when (= "text" format)
+                             (println (str (str/join ":" (remove nil? [file line column])) ": " message)))
+                           (conj problems problem))
+                         []
+                         ;; Lexed in parallel, reported in order.
+                         (remove nil? (pmap check-file args)))]
+    (when-not (= "text" format)
+      (emit format problems))
+    (if (seq problems) 1 0)))
+
 (def ^:private commands
   [{:name "eval" :summary "Evaluate code" :options eval-options :help eval-help :main eval-command}
    {:name "load" :summary "Load a file" :options load-options :help load-help :main load-command}
@@ -445,7 +507,9 @@ does."
    {:name "sessions" :summary "List or close sessions" :options sessions-options :help sessions-help
     :main sessions-command}
    {:name "ports" :summary "List the servers for this directory" :options ports-options :help ports-help
-    :main ports-command}])
+    :main ports-command}
+   {:name "check" :summary "Check files for unbalanced delimiters" :options check-options :help check-help
+    :main check-command}])
 
 (def ^:private help
   (str "Usage: neorepl COMMAND [options]
