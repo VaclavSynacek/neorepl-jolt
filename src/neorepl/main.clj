@@ -6,6 +6,7 @@
             [neorepl.discovery :as discovery]
             [neorepl.evaluation :as evaluation]
             [neorepl.features :as features]
+            [neorepl.jack-in :as jack-in]
             [neorepl.json :as json]
             [neorepl.lexer :as lexer]
             [neorepl.lookups :as lookups]
@@ -112,6 +113,47 @@ and the like carry over from one call to the next.")
       (f client)
       (finally
         (nrepl/close client)))))
+
+(defn- print-err
+  "Prints text to stderr in one go, so lines from several threads don't
+  get mixed up."
+  [text]
+  (binding [*out* *err*]
+    (print text)
+    (flush)))
+
+(defn- print-err-line [line]
+  (print-err (str line "\n")))
+
+(defn- parse-aliases [s]
+  (not-empty (remove str/blank? (str/split s #"[:,]"))))
+
+(def ^:private jack-in-options
+  [{:long "--tool" :arg "TOOL" :parse (set (map :tool jack-in/tools))
+    :doc "Start the server with TOOL: clojure, lein or bb (default: the project's)"}
+   {:long "--aliases" :arg "ALIASES" :parse parse-aliases
+    :doc "Start the server with deps.edn aliases or Leiningen profiles, like :dev:test"}])
+
+(defn- shell-words
+  "command the way it'd be typed in a shell."
+  [command]
+  (str/join " " (for [word command]
+                  (if (re-matches #"[\w@%+=:,./-]+" word)
+                    word
+                    (str "'" (str/replace word "'" "'\\''") "'")))))
+
+(defn- with-server
+  "Starts a server for project, a :dir and the :tool to use, the way options
+  say, saying what it runs, and calls f with it, as jack-in/with-server
+  does. What the server prints goes to (on-line line)."
+  [{:keys [dir tool]} {:keys [aliases port]} on-line f]
+  (when (and aliases (not (:aliases? (jack-in/tool tool))))
+    (throw (usage-error (str "--aliases doesn't go with " tool))))
+  (let [command (jack-in/command tool {:aliases aliases :port port})]
+    (warn (str "Starting an nREPL server in " dir ": " (shell-words command)))
+    ;; Printing from the thread that follows the server's output, with this
+    ;; one's *out* and *err*.
+    (jack-in/with-server dir command (bound-fn* on-line) f)))
 
 (defn- end-err-line
   "Ends the line err, the evaluation's stderr output, left unfinished, so
@@ -627,9 +669,64 @@ server to talk to or the connection to it drops."
             (.removeShutdownHook runtime hook)
             (close)))))))
 
+(def ^:private server-options
+  (concat jack-in-options
+          [{:long "--port" :arg "PORT" :parse parse-port
+            :doc "Listen on PORT (default: any free one)"}]
+          common-options))
+
+(def ^:private server-help
+  (help-text
+   "Usage: neorepl server [options]"
+   "Starts an nREPL server for the project in this directory, or the nearest
+parent with a project.clj, deps.edn or bb.edn. The server writes a port file,
+for neorepl and editors to find it, and runs until neorepl gets Ctrl-C or
+SIGTERM. What it prints goes to stderr, and its nrepl:// URL to stdout once
+it's up."
+   server-options
+   "The project's build tool runs the server: Leiningen for project.clj, the
+Clojure CLI for deps.edn and babashka for bb.edn, in that order when there
+are several. The server gets cider-nrepl, for CIDER's tooling, which
+babashka's has built in."
+   "Exit status: 0 when the server ends fine, 1 when it fails to start or ends
+with an error, and 2 on usage errors."
+   "Examples:
+  neorepl server
+  neorepl server --aliases :dev:test --port 7888
+  neorepl server --tool bb --format json"))
+
+(defn- running-server
+  "The live server with its port file in dir, if any, the way
+  discovery/probe has it."
+  [dir]
+  (some #(when (and (:live %) (= dir (:dir %))) %)
+        (try
+          (discovery/probe dir)
+          (catch clojure.lang.ExceptionInfo _ nil))))
+
+(defn- server-command [{:keys [tool format] :as options} args {:keys [dir]}]
+  (reject-args args)
+  (let [{project-dir :dir :as project} (or (jack-in/find-project dir tool)
+                                           (throw (jack-in/no-project dir tool)))]
+    ;; Another one would take its port file.
+    (when-let [{:keys [port]} (running-server project-dir)]
+      (throw (ex-info (str "There's a server for " project-dir " running already, on port " port)
+                      {:type ::server-running})))
+    (with-server project options print-err-line
+      (fn [{:keys [^Process process host port]}]
+        (let [url (str "nrepl://" host ":" port)]
+          (if (= "text" format)
+            (println url)
+            (emit format {:url url :host host :port port :pid (.pid process)
+                          :dir project-dir :tool (:tool project)}))
+          (flush)
+          (if (zero? (.waitFor process)) 0 1))))))
+
 (def ^:private commands
   [{:name "repl" :summary "Start a REPL (the default)" :options repl-options :help repl-help
     :main repl-command}
+   {:name "server" :summary "Start a server for the project" :options server-options :help server-help
+    :main server-command}
    {:name "eval" :summary "Evaluate code" :options eval-options :help eval-help :main eval-command}
    {:name "load" :summary "Load a file" :options load-options :help load-help :main load-command}
    {:name "doc" :summary "Show a var's documentation" :options lookup-options :help doc-help
@@ -697,7 +794,7 @@ Run neorepl COMMAND --help for its options."))
           ::usage (do (warn (str (ex-message e) "\nRun neorepl " (when spec (str command " ")) "--help for usage."))
                       2)
           (::nrepl/no-server ::nrepl/disconnected ::nrepl/timeout) (do (warn (ex-message e)) 3)
-          ::features/failed (do (warn (ex-message e)) 1)
+          (::features/failed ::jack-in/failed ::jack-in/no-project ::server-running) (do (warn (ex-message e)) 1)
           (throw e))))))
 
 (defn -main [& args]

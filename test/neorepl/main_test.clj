@@ -9,7 +9,7 @@
             [neorepl.nrepl :as nrepl]
             [neorepl.sessions :as sessions]
             [neorepl.test-server :as test-server :refer [*port* call-with-temp-dir spit-file with-client]])
-  (:import (java.io StringWriter)
+  (:import (java.io File StringWriter)
            (java.util.concurrent TimeUnit)))
 
 (def ^:dynamic *dir*
@@ -183,18 +183,27 @@
     (is (= {:status 1 :out "" :err "neorepl: No session called nope\n"}
            (run-command "interrupt" "-s" "nope")))))
 
-(defn- start-neorepl
-  "Runs neorepl with args in a process of its own, on the runtime running the
-  tests, with the test session cache."
-  ^Process [& args]
-  (let [classpath (System/getProperty "java.class.path")
+(defn- start-neorepl-in
+  "Runs neorepl with args in dir, in a process of its own, on the runtime
+  running the tests, with the test session cache."
+  ^Process [dir & args]
+  (let [;; Absolute, since the process runs somewhere else.
+        classpath (->> (str/split (System/getProperty "java.class.path") (re-pattern File/pathSeparator))
+                       (map #(.getAbsolutePath (io/file %)))
+                       (str/join File/pathSeparator))
         cmd (if (System/getProperty "babashka.version")
               ["bb" "-cp" classpath "-m" "neorepl.main"]
               [(str (io/file (System/getProperty "java.home") "bin" "java"))
                "-cp" classpath "clojure.main" "-m" "neorepl.main"])
-        builder (ProcessBuilder. ^java.util.List (into cmd args))]
+        builder (doto (ProcessBuilder. ^java.util.List (into cmd args))
+                  (.directory (io/file dir)))]
     (.put (.environment builder) "XDG_CACHE_HOME" (str *dir*))
     (.start builder)))
+
+(defn- start-neorepl
+  "Runs neorepl with args, as start-neorepl-in does, in the test's directory."
+  ^Process [& args]
+  (apply start-neorepl-in *dir* args))
 
 (deftest kill-test
   ;; Windows has no SIGTERM, so destroy skips the shutdown hooks there.
@@ -273,6 +282,49 @@
       (is (= "repl.named" (:ns (edn/read-string (:out (run "-s" "repl-named" "--format" "edn" "1"))))))))
   (testing "the default command"
     (is (= "user=> 3\nuser=> \n" (:out (run-in *dir* "(+ 1 2)\n" "-p" (str *port*)))))))
+
+(deftest server-test
+  ;; Windows has no SIGTERM, so stopping neorepl there leaves the server.
+  (when-not (test-server/windows?)
+    (call-with-temp-dir
+     (fn [dir]
+       (spit-file dir "bb.edn" "{}")
+       (let [process (start-neorepl-in dir "server" "--format" "edn")
+             {:keys [port tool]} (edn/read-string (.readLine (io/reader (.getInputStream process))))]
+         (try
+           (is (= "bb" tool))
+           (with-client [client {:port port}]
+             (is (= ["3"] (keep :value (nrepl/request client {:op "eval" :code "(+ 1 2)"})))))
+           (is (.exists (io/file dir ".nrepl-port")))
+           (finally
+             (.destroy process)
+             (.waitFor process 10 TimeUnit/SECONDS)))
+         (testing "stopping neorepl stops the server"
+           (is (not (.exists (io/file dir ".nrepl-port"))))
+           (is (= ::nrepl/no-server
+                  (:type (ex-data (is (thrown? clojure.lang.ExceptionInfo (nrepl/connect {:port port}))))))))))))
+  (testing "without a project"
+    (call-with-temp-dir
+     (fn [dir]
+       (let [{:keys [status err]} (run-in dir "" "server")]
+         (is (= 1 status))
+         (is (str/includes? err "No project.clj, deps.edn or bb.edn in ")))
+       (testing "of the kind asked for"
+         (spit-file dir "bb.edn" "{}")
+         (is (str/includes? (:err (run-in dir "" "server" "--tool" "lein")) "No project.clj in "))))))
+  (testing "with one running already"
+    (call-with-temp-dir
+     (fn [dir]
+       (spit-file dir "bb.edn" "{}")
+       (spit-file dir ".nrepl-port" (str *port*))
+       (let [{:keys [status err]} (run-in dir "" "server")]
+         (is (= 1 status))
+         (is (str/includes? err (str "running already, on port " *port*)))))))
+  (testing "babashka projects take no aliases"
+    (call-with-temp-dir
+     (fn [dir]
+       (spit-file dir "bb.edn" "{}")
+       (is (= 2 (:status (run-in dir "" "server" "--aliases" ":dev"))))))))
 
 (deftest doc-test
   (testing "like clojure.repl/doc"
@@ -537,4 +589,5 @@
     ["macroexpand" "--help"] "Usage: neorepl macroexpand"
     ["pst" "--help"] "Usage: neorepl pst"
     ["where" "--help"] "Usage: neorepl where"
-    ["reload" "--help"] "Usage: neorepl reload"))
+    ["reload" "--help"] "Usage: neorepl reload"
+    ["server" "--help"] "Usage: neorepl server"))

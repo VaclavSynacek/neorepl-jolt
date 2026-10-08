@@ -5,9 +5,8 @@ spiritual successor to [REPLy](https://github.com/trptcolin/reply), with a
 proper line editor, the core of CIDER's tooling and a CLI that works just as
 well for scripts and coding agents as it does for people.
 
-It's early days: there's a REPL and a handful of command line tools, with the
-first bits of CIDER's tooling. [PLAN.md](PLAN.md) has the details on where
-this is going.
+It's early days: there's a REPL, jack-in and a handful of command line
+tools. [PLAN.md](PLAN.md) has the details on where this is going.
 
 ## Usage
 
@@ -31,6 +30,18 @@ Commands start with a comma, the CIDER way: `,doc`, `,source`, `,apropos`,
 to open a definition in your `$EDITOR`, and `,help` for the rest.
 Without a terminal, say in a pipe or Emacs' `M-x shell`, it works like
 `clojure.main`'s REPL instead.
+
+`neorepl server` starts an nREPL server for the project, the way CIDER's
+jack-in does, and keeps it up until you stop it, for editors, coding agents
+and `neorepl eval` to share. The project's build tool runs it, with
+cider-nrepl: Leiningen for a `project.clj`, the Clojure CLI for a `deps.edn`
+and babashka, which has CIDER's essentials built in, for a `bb.edn`.
+`--tool` picks another one and `--aliases` adds deps.edn aliases or
+Leiningen profiles:
+
+```shell
+neorepl server --aliases :dev:test --port 7888
+```
 
 `neorepl eval` evaluates code on the same server:
 

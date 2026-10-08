@@ -18,12 +18,17 @@
       ;; Unreadable, or not a number: either way there's no port in it.
       (catch Exception _ nil))))
 
+(defn dirs
+  "dir and its parents, nearest first, the way projects nest."
+  [dir]
+  (take-while some? (iterate #(.getParentFile ^File %) (.getCanonicalFile (io/file dir)))))
+
 (defn find-ports
   "The port files in dir and its parents, nearest first, as maps with the
   :file, the :port in it and the project :dir it's for. Stale files
   included."
   [dir]
-  (for [^File d (take-while some? (iterate #(.getParentFile ^File %) (.getCanonicalFile (io/file dir))))
+  (for [d (dirs dir)
         name port-files
         :let [f (io/file d name)
               port (read-port f)]
