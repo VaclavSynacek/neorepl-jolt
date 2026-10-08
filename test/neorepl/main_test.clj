@@ -165,7 +165,10 @@
     (with-client [client {:port *port*}]
       (nrepl/send! client {:op "eval"
                            :session (sessions/ensure! (sessions-file) client "stuck")
-                           :code "(deliver @neorepl.main-test/started true) (Thread/sleep 20000)"}
+                           ;; One form, so there's no value on its way back when
+                           ;; the client goes, which could take the session's thread
+                           ;; down with it.
+                           :code "(do (deliver @neorepl.main-test/started true) (Thread/sleep 20000))"}
                    (fn [_]))
       (is (deref @started 10000 false)))
     (is (= {:status 0 :out "" :err ""} (run-command "interrupt" "-s" "stuck")))
