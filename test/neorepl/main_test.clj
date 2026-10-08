@@ -50,7 +50,10 @@
     (let [{:keys [status out err]} (run "(/ 1 0) :after")]
       (is (= 1 status))
       (is (= ":after\n" out))
-      (is (str/includes? err "Divide by zero")))))
+      (is (str/includes? err "Divide by zero"))))
+  (testing "warnings start on a line of their own"
+    (is (= {:status 124 :out "nil\n" :err "oops\nneorepl: Timed out after 0.1s and interrupted the evaluation\n"}
+           (run "-s" "warn-line" "--timeout" "0.1" "(binding [*out* *err*] (print \"oops\") (flush)) (Thread/sleep 5000)")))))
 
 (deftest structured-format-test
   (testing "edn"
@@ -102,6 +105,27 @@
     (let [{:keys [status out]} (run "-s" "slow" "--timeout" "0.2" "--format" "edn" "(Thread/sleep 10000)")]
       (is (= 124 status))
       (is (= "timeout" (:status (edn/read-string out)))))))
+
+(deftest max-output-test
+  (testing "values get cut"
+    (is (= {:status 0 :out "(0 1 \n:x\n" :err "neorepl: Cut the output at 5 characters\n"}
+           (run "--max-output" "5" "(range 10) :x"))))
+  (testing "stdout and stderr get cut once they've had their share"
+    (is (= {:status 0 :out "abcde\n:x\n" :err "12345\nneorepl: Cut the output at 5 characters\n"}
+           (run "--max-output" "5" "(do (print \"abc\") (flush) (print \"defgh\") (binding [*out* *err*] (print 1234567)) :x)"))))
+  (testing "surrogate pairs stay whole"
+    (is (= "a\n:x\n" (:out (run "--max-output" "2" "(do (print \"a\uD83D\uDE00b\") :x)")))))
+  (testing "the server stops printing at the limit, so endless values are fine"
+    (is (= {:status 0 :out "(0 1 2 3 4\n" :err "neorepl: Cut the output at 10 characters\n"}
+           (run "--max-output" "10" "--timeout" "10" "(range)"))))
+  (testing "structured output says when something got cut"
+    (let [cut (edn/read-string (:out (run "--max-output" "3" "--format" "edn" "(println 12345) :abcd")))]
+      (is (= {:status "ok" :values ["nil" ":ab"] :out "123" :err "" :ns "user" :truncated true} cut)))
+    (is (not (contains? (edn/read-string (:out (run "--max-output" "3" "--format" "edn" "1")))
+                        :truncated)))
+    (testing "but not about cuts the session asked for itself"
+      (run "-s" "quota" "(set! nrepl.middleware.print/*quota* 3)")
+      (is (= {:status 0 :out "(0 \n" :err ""} (run "-s" "quota" "(range 10)"))))))
 
 (def started
   "Delivered by code the killed neorepl evaluates on the test server."
@@ -167,6 +191,8 @@
       ["eval" "--timeout" "-1" "1"] "Invalid value for --timeout"
       ["eval" "--format" "yaml" "1"] "Invalid value for --format: yaml"
       ["eval" "--timeout" "1234567890" "1"] "Invalid value for --timeout"
+      ["eval" "--max-output" "0" "1"] "Invalid value for --max-output"
+      ["eval" "--max-output" "1.5" "1"] "Invalid value for --max-output"
       ["eval" "--url" "http://localhost:1" "1"] "Invalid value for --url"
       ["eval" "--url" "nrepl://localhost:1" "-p" "1" "1"] "--url doesn't go with --host or --port"
       ["eval" "--host" "localhost" "1"] "--host needs a --port"

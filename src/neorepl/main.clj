@@ -22,6 +22,11 @@
   (let [port (Long/parseLong s)]
     (when (< 0 port 65536) port)))
 
+(defn- parse-count [s]
+  (when (re-matches #"\d{1,9}" s)
+    (let [n (Long/parseLong s)]
+      (when (pos? n) n))))
+
 (defn- parse-seconds [s]
   ;; Nine digits are plenty, and the milliseconds can't overflow.
   (when (re-matches #"\d{1,9}(\.\d+)?" s)
@@ -41,6 +46,8 @@
     :doc "Evaluate in the session called NAME (default: default)"}
    {:long "--timeout" :arg "SECS" :parse parse-seconds
     :doc "Interrupt the evaluation after SECS seconds"}
+   {:long "--max-output" :arg "CHARS" :parse parse-count
+    :doc "Cut each value, stdout and stderr at CHARS characters"}
    {:long "--format" :arg "FORMAT" :parse #{"text" "edn" "json"}
     :doc "text (default), edn or json"}
    {:short "-h" :long "--help"
@@ -79,6 +86,7 @@ Exit status: 0 on success, 1 when the evaluation fails, 2 on usage errors,
 Examples:
   neorepl eval '(+ 1 2)'
   neorepl eval --format json -f script.clj
+  neorepl eval --max-output 2000 '(slurp \"big.txt\")'
   echo '(range 3)' | neorepl eval -"))
 
 (defn- read-code [file args]
@@ -107,15 +115,32 @@ Examples:
 (defn- add-response [acc {:keys [value out err ns ex root-ex status]}]
   (cond-> (update acc :statuses into status)
     value (update :values conj value)
-    out (update :out conj out)
-    err (update :err conj err)
+    (seq out) (-> (update :out conj out) (update :out-size + (count out)))
+    (seq err) (-> (update :err conj err) (update :err-size + (count err)))
     ns (assoc :ns ns)
     (and ex (not (:ex acc))) (assoc :ex ex :root-ex root-ex)))
+
+(defn- cut
+  "s cut down to n characters, short of splitting a surrogate pair."
+  [^String s n]
+  (cond
+    (<= (count s) n) s
+    (and (pos? n) (Character/isHighSurrogate (.charAt s (dec n)))) (subs s 0 (dec n))
+    :else (subs s 0 n)))
+
+(defn- fit
+  "Cuts response's value at max-output characters and its out and err to what
+  acc leaves of max-output for them."
+  [{:keys [out-size err-size]} max-output response]
+  (cond-> response
+    (:value response) (update :value cut max-output)
+    (:out response) (update :out cut (- max-output out-size))
+    (:err response) (update :err cut (- max-output err-size))))
 
 (defn- result
   "What an evaluation came to, given its accumulated responses and, when it
   ran out of time, the timeout and whether the interrupt worked."
-  [{:keys [values out err ns ex root-ex statuses]} {:keys [timeout interrupted?] :as timed-out}]
+  [{:keys [values out err ns ex root-ex statuses truncated?]} {:keys [timeout interrupted?] :as timed-out}]
   (let [status (if timed-out "timeout" (or (some statuses failure-statuses) "ok"))
         message (case status
                   "timeout" (str "Timed out after " timeout "s"
@@ -127,6 +152,7 @@ Examples:
                   "error" (str "The server reported " (str/join ", " (sort (disj statuses "done" "error"))))
                   nil)]
     (cond-> {:status status :values values :out (str/join out) :err (str/join err) :ns ns}
+      truncated? (assoc :truncated true)
       ex (assoc :ex ex :root-ex root-ex)
       message (assoc :message message))))
 
@@ -148,22 +174,30 @@ Examples:
 (defn- evaluate
   "Sends msg, an eval, and returns its result. Calls on-response with each
   response as it arrives. Interrupts the evaluation when it runs longer than
-  timeout seconds, or when neorepl gets killed."
-  [client {:keys [session] :as msg} {:keys [timeout on-response]}]
+  timeout seconds, or when neorepl gets killed. With max-output, cuts each
+  value at that many characters, and stdout and stderr too."
+  [client {:keys [session] :as msg} {:keys [timeout max-output on-response]}]
   (let [deadline (when timeout (+ (System/currentTimeMillis) (long (* 1000 timeout))))
         responses (LinkedBlockingQueue.)
-        id (nrepl/send! client msg #(.put responses %))
+        ;; The server cuts values itself, sparing us an endless (range), but
+        ;; not every server has the print middleware.
+        id (nrepl/send! client (cond-> msg max-output (assoc :nrepl.middleware.print/quota max-output))
+                        #(.put responses %))
         ;; Otherwise the evaluation keeps the session busy for later calls.
         hook (Thread. ^Runnable #(interrupt! client session id))
         runtime (Runtime/getRuntime)]
     (.addShutdownHook runtime hook)
     (try
-      (loop [acc {:values [] :out [] :err [] :statuses #{}}]
+      (loop [acc {:values [] :out [] :err [] :out-size 0 :err-size 0 :statuses #{}}]
         (if-let [response (if deadline
                             (.poll responses (- deadline (System/currentTimeMillis)) TimeUnit/MILLISECONDS)
                             (.take responses))]
-          (let [acc (add-response acc response)]
-            (on-response response)
+          (let [fitted (cond->> response max-output (fit acc max-output))
+                truncated? (and max-output
+                                (or (not= fitted response)
+                                    (nrepl/status? response "nrepl.middleware.print/truncated")))
+                acc (cond-> (add-response acc fitted) truncated? (assoc :truncated? true))]
+            (on-response fitted)
             (when (nrepl/status? response "need-input")
               (send-stdin client session))
             (if (nrepl/done? response)
@@ -192,9 +226,17 @@ Examples:
         (println value)
         (vreset! fresh-line? true)))))
 
+(defn- end-err-line
+  "Ends the line err, the evaluation's stderr output, left unfinished, so
+  that warnings after it get a line of their own."
+  [err]
+  (when-not (or (empty? err) (str/ends-with? err "\n"))
+    (binding [*out* *err*]
+      (newline))))
+
 (defn- eval-command [args {:keys [dir sessions-file]}]
   (let [{:keys [options args error]} (cli/parse eval-options args)
-        {:keys [file session timeout format] :or {session "default" format "text"}} options]
+        {:keys [file session timeout max-output format] :or {session "default" format "text"}} options]
     (cond
       error (throw (usage-error "eval" error))
       (:help options) (do (println eval-help) 0)
@@ -207,11 +249,14 @@ Examples:
                              :session (sessions/ensure! sessions-file client session)}
                       ;; For the file and line numbers in errors.
                       file (assoc :file (.getAbsolutePath (io/file file))))
-                {:keys [status message] :as result}
+                {:keys [status message truncated err] :as result}
                 (evaluate client msg {:timeout timeout
+                                      :max-output max-output
                                       :on-response (if (= "text" format) (text-printer) (fn [_]))})]
             (case format
-              "text" (some-> message warn)
+              "text" (do (when (or truncated message) (end-err-line err))
+                         (when truncated (warn (str "Cut the output at " max-output " characters")))
+                         (some-> message warn))
               "edn" (prn result)
               "json" (println (json/write-str result)))
             (case status "ok" 0 "timeout" 124 1))
