@@ -120,58 +120,63 @@
   (let [deadline (when timeout (+ (System/currentTimeMillis) (long (* 1000 timeout))))
         responses (LinkedBlockingQueue.)
         given-up (promise)
-        ;; The server cuts values itself, sparing us an endless (range), but
-        ;; not every server has the print middleware.
-        id (nrepl/send! client (cond-> msg max-output (assoc :nrepl.middleware.print/quota max-output))
-                        #(if (realized? given-up)
-                           (nrepl/unclaimed client %)
-                           (.put responses %)))
-        interrupt-failed (promise)
-        interrupt #(if (realized? interrupt-failed)
-                     (.put responses ::stop)
-                     ;; Not on the thread that delivers signals and keystrokes.
-                     (future
-                       (when-not (interrupt! client session id responses)
-                         (.put responses ::interrupt-failed))))
-        give-up #(do (deliver given-up true)
-                     (result %1 %2))
+        sent (promise)
         ;; Otherwise the evaluation keeps the session busy for later calls.
-        hook (Thread. ^Runnable #(interrupt! client session id responses))
+        ;; In place before the message goes out, since neorepl can get
+        ;; killed right after.
+        hook (Thread. ^Runnable #(when-let [id (deref sent 1000 nil)]
+                                   (interrupt! client session id responses)))
         runtime (Runtime/getRuntime)]
-    (on-send id interrupt)
     (.addShutdownHook runtime hook)
     (try
-      (loop [acc {:values [] :out [] :err [] :out-size 0 :err-size 0 :statuses #{}}]
-        (let [response (if deadline
-                         (.poll responses (- deadline (System/currentTimeMillis)) TimeUnit/MILLISECONDS)
-                         (.take responses))]
-          (cond
-            (nil? response)
-            (give-up acc {:timeout timeout :interrupted? (interrupt! client session id responses)})
+      (let [;; The server cuts values itself, sparing us an endless (range),
+            ;; but not every server has the print middleware.
+            id (nrepl/send! client (cond-> msg max-output (assoc :nrepl.middleware.print/quota max-output))
+                            #(if (realized? given-up)
+                               (nrepl/unclaimed client %)
+                               (.put responses %)))
+            _ (deliver sent id)
+            interrupt-failed (promise)
+            interrupt #(if (realized? interrupt-failed)
+                         (.put responses ::stop)
+                         ;; Not on the thread that delivers signals and keystrokes.
+                         (future
+                           (when-not (interrupt! client session id responses)
+                             (.put responses ::interrupt-failed))))
+            give-up #(do (deliver given-up true)
+                         (result %1 %2))]
+        (on-send id interrupt)
+        (loop [acc {:values [] :out [] :err [] :out-size 0 :err-size 0 :statuses #{}}]
+          (let [response (if deadline
+                           (.poll responses (- deadline (System/currentTimeMillis)) TimeUnit/MILLISECONDS)
+                           (.take responses))]
+            (cond
+              (nil? response)
+              (give-up acc {:timeout timeout :interrupted? (interrupt! client session id responses)})
 
-            (= ::stop response)
-            (give-up acc {:stopped true})
+              (= ::stop response)
+              (give-up acc {:stopped true})
 
-            (= ::interrupt-failed response)
-            (do (when-not (realized? interrupt-failed)
-                  (deliver interrupt-failed true)
-                  (on-interrupt-failed))
-                (recur acc))
+              (= ::interrupt-failed response)
+              (do (when-not (realized? interrupt-failed)
+                    (deliver interrupt-failed true)
+                    (on-interrupt-failed))
+                  (recur acc))
 
-            :else
-            (let [fitted (cond->> response max-output (fit acc max-output))
-                  truncated? (and max-output
-                                  (or (not= fitted response)
-                                      (nrepl/status? response "nrepl.middleware.print/truncated")))
-                  acc (cond-> (add-response acc fitted collect?) truncated? (assoc :truncated? true))]
-              (on-response fitted)
-              (when (nrepl/status? response "need-input")
-                (let [line (read-line)]
-                  (when-not (= :interrupted line)
-                    (send-stdin client session line))))
-              (if (nrepl/done? response)
-                (result acc nil)
-                (recur acc))))))
+              :else
+              (let [fitted (cond->> response max-output (fit acc max-output))
+                    truncated? (and max-output
+                                    (or (not= fitted response)
+                                        (nrepl/status? response "nrepl.middleware.print/truncated")))
+                    acc (cond-> (add-response acc fitted collect?) truncated? (assoc :truncated? true))]
+                (on-response fitted)
+                (when (nrepl/status? response "need-input")
+                  (let [line (read-line)]
+                    (when-not (= :interrupted line)
+                      (send-stdin client session line))))
+                (if (nrepl/done? response)
+                  (result acc nil)
+                  (recur acc)))))))
       (finally
         (.removeShutdownHook runtime hook)))))
 
