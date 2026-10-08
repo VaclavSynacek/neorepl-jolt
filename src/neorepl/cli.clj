@@ -3,8 +3,8 @@
 
   Options are specs: maps with the :long name (\"--port\"), optionally a
   :short one (\"-p\"), the :arg name for options that take a value, a :parse
-  function for that value and a :doc line. The option's key is its long name
-  as a keyword."
+  function for that value, its :default and a :doc line. The option's key is
+  its long name as a keyword."
   (:require [clojure.string :as str]))
 
 (defn- option-key [{:keys [long]}]
@@ -20,7 +20,9 @@
                                :when name]
                            [name spec]))]
     (loop [[a & more :as args] args
-           options {}
+           options (into {} (for [spec specs
+                                  :when (contains? spec :default)]
+                              [(option-key spec) (:default spec)]))
            positional []]
       (cond
         (empty? args) {:options options :args positional}

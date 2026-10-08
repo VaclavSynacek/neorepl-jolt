@@ -5,7 +5,8 @@ spiritual successor to [REPLy](https://github.com/trptcolin/reply), with a
 proper line editor, the core of CIDER's tooling and a CLI that works just as
 well for scripts and coding agents as it does for people.
 
-It's early days: so far there's `neorepl eval` and not much else.
+It's early days: so far there's `neorepl eval`, `neorepl load` and not much
+else.
 [PLAN.md](PLAN.md) has the details on where this is going.
 
 ## Usage
@@ -29,6 +30,13 @@ echo '(range 3)' | neorepl eval -
 
 Evaluations share a session, so `*ns*`, `*1` and `*e` carry over from one
 call to the next. `neorepl eval --help` has the rest.
+
+`neorepl load` loads a file the way `load-file` does, which is how you get
+your changes into the running program after editing it:
+
+```shell
+neorepl load src/my/app.clj
+```
 
 ## Development
 

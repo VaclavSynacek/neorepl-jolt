@@ -34,10 +34,15 @@
                   (reset! status (main/run args {:dir dir :sessions-file (sessions-file)})))))]
     {:status @status :out out :err (str err)}))
 
+(defn- run-command
+  "Runs a neorepl command against the test server with args."
+  [command & args]
+  (apply run-in *dir* "" command "-p" (str *port*) args))
+
 (defn- run
   "Runs neorepl eval against the test server with args."
   [& args]
-  (apply run-in *dir* "" "eval" "-p" (str *port*) args))
+  (apply run-command "eval" args))
 
 (deftest text-format-test
   (testing "values on lines of their own, after any output"
@@ -172,6 +177,27 @@
            (run-in *dir* "hello\nworld\n" "eval" "-p" (str *port*) "-s" "stdin-test"
                    "(read-line) (read-line) (read-line)")))))
 
+(deftest load-test
+  (let [file (spit-file *dir* "src/demo/core.clj"
+                        "(ns demo.core)\n(println :loading)\n(defn answer [] 42)\n(answer)")]
+    (testing "only the last value comes back"
+      (is (= {:status 0 :out ":loading\n42\n" :err ""}
+             (run-command "load" "-s" "load-test" (str file)))))
+    (testing "the session stays in its namespace"
+      (is (= {:status "ok" :values ["42"] :out "" :err "" :ns "user"}
+             (edn/read-string (:out (run "-s" "load-test" "--format" "edn" "(demo.core/answer)")))))))
+  (testing "loading stops at the first error, which points at the file"
+    (let [file (spit-file *dir* "src/demo/broken.clj" "(ns demo.broken)\n(/ 1 0)\n(println :after)")
+          {:keys [status out err]} (run-command "load" (str file))]
+      (is (= 1 status))
+      (is (= "" out))
+      (is (str/includes? err "broken.clj:2"))))
+  (testing "structured output"
+    (let [file (spit-file *dir* "src/demo/value.clj" "(ns demo.value)\n:a\n(range 10)")]
+      ;; load-file doesn't say which namespace the session's in.
+      (is (= {:status "ok" :values ["(0 1 2"] :out "" :err "" :ns nil :truncated true}
+             (edn/read-string (:out (run-command "load" "--format" "edn" "--max-output" "6" (str file)))))))))
+
 (deftest discovery-test
   (call-with-temp-dir
    (fn [dir]
@@ -202,7 +228,14 @@
       ["eval" "-p" "1" "(+" "1)"] "Too many arguments"
       ["eval" "-f" "x.clj" "1"] "not both"
       ["eval" "-f" "/does/not/exist.clj"] "No such file"
+      ["load" "-p" "1"] "Nothing to load"
+      ["load" "-p" "1" "a.clj" "b.clj"] "Load one file at a time"
+      ["load" "-p" "1" "/does/not/exist.clj"] "No such file"
+      ["load" "-f" "x.clj"] "Unknown option: -f"
       ["evil"] "Unknown command: evil"))
+  (testing "usage errors point at the right help"
+    (is (str/includes? (:err (run-in *dir* "" "load" "--bogus")) "Run neorepl load --help"))
+    (is (str/includes? (:err (run-in *dir* "" "evil")) "Run neorepl --help")))
   (testing "no server"
     (let [{:keys [status err]} (run-in *dir* "" "eval" "-p" (str (test-server/free-port)) "1")]
       (is (= 3 status))
@@ -214,4 +247,6 @@
     [] "Commands:"
     ["--help"] "Commands:"
     ["eval" "--help"] "Usage: neorepl eval"
-    ["eval" "-h"] "--timeout SECS"))
+    ["eval" "-h"] "--timeout SECS"
+    [] "load "
+    ["load" "--help"] "Usage: neorepl load"))

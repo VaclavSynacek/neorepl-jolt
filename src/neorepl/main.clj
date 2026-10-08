@@ -7,12 +7,11 @@
             [neorepl.json :as json]
             [neorepl.nrepl :as nrepl]
             [neorepl.sessions :as sessions])
-  (:import (java.util.concurrent LinkedBlockingQueue TimeUnit)))
+  (:import (java.io File)
+           (java.util.concurrent LinkedBlockingQueue TimeUnit)))
 
-(defn- usage-error
-  "An error in how neorepl was called; command is the one whose help to point at."
-  [command msg]
-  (ex-info msg {:type ::usage :command command}))
+(defn- usage-error [msg]
+  (ex-info msg {:type ::usage}))
 
 (defn- warn [msg]
   (binding [*out* *err*]
@@ -33,80 +32,68 @@
     (let [n (if (str/includes? s ".") (Double/parseDouble s) (Long/parseLong s))]
       (when (pos? n) n))))
 
-(def ^:private eval-options
+(def ^:private connection-options
   [{:short "-p" :long "--port" :arg "PORT" :parse parse-port
     :doc "Connect to the server on PORT"}
    {:long "--host" :arg "HOST" :parse not-empty
     :doc "Host for --port (default: 127.0.0.1)"}
    {:long "--url" :arg "URL" :parse nrepl/parse-url
-    :doc "Connect to nrepl://HOST:PORT or nrepl+unix:PATH"}
-   {:short "-f" :long "--file" :arg "FILE" :parse not-empty
-    :doc "Evaluate the code in FILE"}
-   {:short "-s" :long "--session" :arg "NAME" :parse not-empty
-    :doc "Evaluate in the session called NAME (default: default)"}
+    :doc "Connect to nrepl://HOST:PORT or nrepl+unix:PATH"}])
+
+(def ^:private evaluation-options
+  [{:short "-s" :long "--session" :arg "NAME" :parse not-empty :default "default"
+    :doc "Use the session called NAME (default: default)"}
    {:long "--timeout" :arg "SECS" :parse parse-seconds
     :doc "Interrupt the evaluation after SECS seconds"}
    {:long "--max-output" :arg "CHARS" :parse parse-count
-    :doc "Cut each value, stdout and stderr at CHARS characters"}
-   {:long "--format" :arg "FORMAT" :parse #{"text" "edn" "json"}
+    :doc "Cut each value, stdout and stderr at CHARS characters"}])
+
+(def ^:private common-options
+  [{:long "--format" :arg "FORMAT" :parse #{"text" "edn" "json"} :default "text"
     :doc "text (default), edn or json"}
    {:short "-h" :long "--help"
     :doc "Show this help"}])
 
-(def ^:private help
-  "Usage: neorepl COMMAND [options]
+(def ^:private discovery-note
+  "Without --port or --url it connects to the nearest server with a port file
+(.nrepl-port, .shadow-cljs/nrepl.port) in this directory or a parent.")
 
-A terminal client for nREPL servers.
+(def ^:private sessions-note
+  "Evaluations share a session, per server and --session name, so *ns*, *1, *e
+and the like carry over from one call to the next.")
 
-Commands:
-  eval    Evaluate code on a running server
+(def ^:private evaluation-exit-statuses
+  "Exit status: 0 on success, 1 when the evaluation fails, 2 on usage errors,
+3 when there's no server to talk to and 124 when it times out.")
 
-Run neorepl COMMAND --help for its options.")
+(defn- help-text
+  "A --help text: the usage and description paragraphs, then the options and
+  any paragraphs after them."
+  [usage description options & more]
+  (str/join "\n\n" (concat [usage description (str "Options:\n" (cli/summary options))] more)))
 
-(def ^:private eval-help
-  (str "Usage: neorepl eval [options] CODE
-       neorepl eval [options] -f FILE
-       neorepl eval [options] -
-
-Evaluates CODE, the contents of FILE or, with -, standard input. Output is
-printed as it arrives and each value on a line of its own.
-
-Without --port or --url it connects to the nearest server with a port file
-(.nrepl-port, .shadow-cljs/nrepl.port) in this directory or a parent.
-
-Evaluations share a session, per server and --session name, so *ns*, *1, *e
-and the like carry over from one call to the next.
-
-Options:
-" (cli/summary eval-options) "
-
-Exit status: 0 on success, 1 when the evaluation fails, 2 on usage errors,
-3 when there's no server to talk to and 124 when it times out.
-
-Examples:
-  neorepl eval '(+ 1 2)'
-  neorepl eval --format json -f script.clj
-  neorepl eval --max-output 2000 '(slurp \"big.txt\")'
-  echo '(range 3)' | neorepl eval -"))
-
-(defn- read-code [file args]
-  (cond
-    (and file (seq args)) (throw (usage-error "eval" "Give either CODE or --file, not both"))
-    file (if (.isFile (io/file file))
-           (slurp file)
-           (throw (usage-error "eval" (str "No such file: " file))))
-    (= ["-"] args) (slurp *in*)
-    (= 1 (count args)) (first args)
-    (empty? args) (throw (usage-error "eval" "Nothing to evaluate"))
-    :else (throw (usage-error "eval" "Too many arguments: quote the code to pass it as one"))))
+(defn- existing-file ^File [path]
+  (let [file (io/file path)]
+    (if (.isFile file)
+      file
+      (throw (usage-error (str "No such file: " path))))))
 
 (defn- connect [{:keys [url host port]} dir]
   (cond
-    (and url (or host port)) (throw (usage-error "eval" "--url doesn't go with --host or --port"))
+    (and url (or host port)) (throw (usage-error "--url doesn't go with --host or --port"))
     url (nrepl/connect url)
     port (nrepl/connect (cond-> {:port port} host (assoc :host host)))
-    host (throw (usage-error "eval" "--host needs a --port"))
+    host (throw (usage-error "--host needs a --port"))
     :else (discovery/connect dir)))
+
+(defn- with-client
+  "Calls f with a client connected the way options say, and closes it after."
+  [options dir f]
+  (let [client (connect options dir)]
+    (try
+      (f client)
+      (finally
+        (nrepl/close client)))))
 
 (def ^:private failure-statuses
   "The statuses that make an evaluation fail, the most telling first."
@@ -234,49 +221,133 @@ Examples:
     (binding [*out* *err*]
       (newline))))
 
-(defn- eval-command [args {:keys [dir sessions-file]}]
-  (let [{:keys [options args error]} (cli/parse eval-options args)
-        {:keys [file session timeout max-output format] :or {session "default" format "text"}} options]
+(defn- report-evaluation
+  "Evaluates msg on the server options point at, in the session they name,
+  prints the result in the format they ask for and returns the exit status."
+  [msg {:keys [session timeout max-output format] :as options} {:keys [dir sessions-file]}]
+  (with-client options dir
+    (fn [client]
+      (let [{:keys [status message truncated err] :as result}
+            (evaluate client
+                      (assoc msg :session (sessions/ensure! sessions-file client session))
+                      {:timeout timeout
+                       :max-output max-output
+                       :on-response (if (= "text" format) (text-printer) (fn [_]))})]
+        (case format
+          "text" (do (when (or truncated message) (end-err-line err))
+                     (when truncated (warn (str "Cut the output at " max-output " characters")))
+                     (some-> message warn))
+          "edn" (prn result)
+          "json" (println (json/write-str result)))
+        (case status "ok" 0 "timeout" 124 1)))))
+
+(def ^:private eval-options
+  (concat connection-options
+          [{:short "-f" :long "--file" :arg "FILE" :parse not-empty
+            :doc "Evaluate the code in FILE"}]
+          evaluation-options
+          common-options))
+
+(def ^:private eval-help
+  (help-text
+   "Usage: neorepl eval [options] CODE
+       neorepl eval [options] -f FILE
+       neorepl eval [options] -"
+   "Evaluates CODE, the contents of FILE or, with -, standard input. Output is
+printed as it arrives and each value on a line of its own."
+   eval-options
+   discovery-note
+   sessions-note
+   evaluation-exit-statuses
+   "Examples:
+  neorepl eval '(+ 1 2)'
+  neorepl eval --format json -f script.clj
+  neorepl eval --max-output 2000 '(slurp \"big.txt\")'
+  echo '(range 3)' | neorepl eval -"))
+
+(defn- read-code [file args]
+  (cond
+    (and file (seq args)) (throw (usage-error "Give either CODE or --file, not both"))
+    file (slurp (existing-file file))
+    (= ["-"] args) (slurp *in*)
+    (= 1 (count args)) (first args)
+    (empty? args) (throw (usage-error "Nothing to evaluate"))
+    :else (throw (usage-error "Too many arguments: quote the code to pass it as one"))))
+
+(defn- eval-command [{:keys [file] :as options} args ctx]
+  (report-evaluation (cond-> {:op "eval" :code (read-code file args)}
+                       ;; For the file and line numbers in errors.
+                       file (assoc :file (.getAbsolutePath (io/file file))))
+                     options
+                     ctx))
+
+(def ^:private load-options
+  (concat connection-options evaluation-options common-options))
+
+(def ^:private load-help
+  (help-text
+   "Usage: neorepl load [options] FILE"
+   "Loads FILE the way load-file does: loading stops at the first error, only
+the value of the last form comes back and the session stays in its
+namespace. eval -f, on the other hand, evaluates the forms one by one, and
+an ns form switches the session to that namespace."
+   load-options
+   discovery-note
+   sessions-note
+   evaluation-exit-statuses
+   "Examples:
+  neorepl load src/my/app.clj
+  neorepl load --timeout 60 --format json src/my/app.clj"))
+
+(defn- load-command [options args ctx]
+  (let [file (case (count args)
+               0 (throw (usage-error "Nothing to load"))
+               1 (existing-file (first args))
+               (throw (usage-error "Load one file at a time")))]
+    (report-evaluation {:op "load-file"
+                        :file (slurp file)
+                        :file-path (.getAbsolutePath file)
+                        :file-name (.getName file)}
+                       options
+                       ctx)))
+
+(def ^:private commands
+  [{:name "eval" :summary "Evaluate code" :options eval-options :help eval-help :main eval-command}
+   {:name "load" :summary "Load a file" :options load-options :help load-help :main load-command}])
+
+(def ^:private help
+  (let [width (apply max (map (comp count :name) commands))]
+    (str "Usage: neorepl COMMAND [options]
+
+A terminal client for nREPL servers.
+
+Commands:
+" (str/join "\n" (for [{:keys [name summary]} commands]
+                   (format (str "  %-" width "s  %s") name summary))) "
+
+Run neorepl COMMAND --help for its options.")))
+
+(defn- run-command [{:keys [options help main]} args ctx]
+  (let [{:keys [error] :as parsed} (cli/parse options args)]
     (cond
-      error (throw (usage-error "eval" error))
-      (:help options) (do (println eval-help) 0)
-      :else
-      (let [code (read-code file args)
-            client (connect options dir)]
-        (try
-          (let [msg (cond-> {:op "eval"
-                             :code code
-                             :session (sessions/ensure! sessions-file client session)}
-                      ;; For the file and line numbers in errors.
-                      file (assoc :file (.getAbsolutePath (io/file file))))
-                {:keys [status message truncated err] :as result}
-                (evaluate client msg {:timeout timeout
-                                      :max-output max-output
-                                      :on-response (if (= "text" format) (text-printer) (fn [_]))})]
-            (case format
-              "text" (do (when (or truncated message) (end-err-line err))
-                         (when truncated (warn (str "Cut the output at " max-output " characters")))
-                         (some-> message warn))
-              "edn" (prn result)
-              "json" (println (json/write-str result)))
-            (case status "ok" 0 "timeout" 124 1))
-          (finally
-            (nrepl/close client)))))))
+      error (throw (usage-error error))
+      (:help (:options parsed)) (do (println help) 0)
+      :else (main (:options parsed) (:args parsed) ctx))))
 
 (defn run
   "Runs the neorepl command line args and returns the exit status. ctx has
   the :dir to look for port files in and the :sessions-file."
   [args ctx]
-  (try
-    (let [[command & args] args]
-      (case command
-        (nil "help" "-h" "--help") (do (println help) 0)
-        "eval" (eval-command args ctx)
-        (throw (usage-error nil (str "Unknown command: " command)))))
-    (catch clojure.lang.ExceptionInfo e
-      (let [{:keys [type command]} (ex-data e)]
-        (case type
-          ::usage (do (warn (str (ex-message e) "\nRun neorepl " (some-> command (str " ")) "--help for usage."))
+  (let [[command & args] args
+        spec (some #(when (= command (:name %)) %) commands)]
+    (try
+      (cond
+        (contains? #{nil "help" "-h" "--help"} command) (do (println help) 0)
+        spec (run-command spec args ctx)
+        :else (throw (usage-error (str "Unknown command: " command))))
+      (catch clojure.lang.ExceptionInfo e
+        (case (:type (ex-data e))
+          ::usage (do (warn (str (ex-message e) "\nRun neorepl " (when spec (str command " ")) "--help for usage."))
                       2)
           (::nrepl/no-server ::nrepl/disconnected ::nrepl/timeout) (do (warn (ex-message e)) 3)
           (throw e))))))
