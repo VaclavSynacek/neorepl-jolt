@@ -213,6 +213,24 @@
   [text]
   (input-incomplete? (add-line empty-input text)))
 
+(defn forms
+  "The text of each top-level form in s, without comments. A prefix such as
+  ' goes with the form after it."
+  [s]
+  (loop [[{:keys [type start end] :as token} & more] (tokenize s)
+         depth 0
+         from nil
+         forms []]
+    (cond
+      (nil? token) forms
+      (and (zero? depth) (= :comment type)) (recur more depth from forms)
+      :else (let [from (or from start)
+                  depth (case type :open (inc depth) :close (dec depth) depth)]
+              (if (and (<= depth 0)
+                       (not (#{:open :macro-char :discard :reader-macro} type)))
+                (recur more 0 nil (conj forms (subs s from end)))
+                (recur more depth from forms))))))
+
 (def ^:private symbolic-types #{:symbol :keyword :constant})
 
 (defn symbol-at

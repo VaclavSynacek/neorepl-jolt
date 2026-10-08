@@ -5,9 +5,9 @@ spiritual successor to [REPLy](https://github.com/trptcolin/reply), with a
 proper line editor, the core of CIDER's tooling and a CLI that works just as
 well for scripts and coding agents as it does for people.
 
-It's early days: there's a REPL and a handful of command line tools, but none
-of CIDER's tooling yet. [PLAN.md](PLAN.md) has the details on where this is
-going.
+It's early days: there's a REPL and a handful of command line tools, with the
+first bits of CIDER's tooling. [PLAN.md](PLAN.md) has the details on where
+this is going.
 
 ## Usage
 
@@ -45,6 +45,15 @@ your changes into the running program after editing it:
 
 ```shell
 neorepl load src/my/app.clj
+```
+
+`neorepl doc`, `neorepl source`, `neorepl complete` and `neorepl apropos` look
+things up the way their `clojure.repl` namesakes do, using cider-nrepl when
+the server has it:
+
+```shell
+neorepl doc map
+neorepl source --ns my.app my.app/start
 ```
 
 `neorepl check` finds unbalanced parens, brackets and braces, the most

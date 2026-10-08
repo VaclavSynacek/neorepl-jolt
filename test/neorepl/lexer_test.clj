@@ -153,6 +153,13 @@
       (is (not (lexer/input-incomplete? (reduce lexer/add-line lexer/empty-input lines))))
       (is (< (- (System/nanoTime) start) 2e9)))))
 
+(deftest forms-test
+  (are [s forms] (= forms (lexer/forms s))
+    "" []
+    "[f] [f coll]" ["[f]" "[f coll]"]
+    "[{:keys [a b]} & more] [x]" ["[{:keys [a b]} & more]" "[x]"]
+    "a 'b ; c\n\"d e\"" ["a" "'b" "\"d e\""]))
+
 (deftest symbol-at-test
   (let [s "(map inc :kw)"]
     (are [cursor expected] (= expected (text-at lexer/symbol-at s cursor))

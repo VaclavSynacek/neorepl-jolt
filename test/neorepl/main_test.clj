@@ -271,6 +271,39 @@
   (testing "the default command"
     (is (= "user=> 3\nuser=> \n" (:out (run-in *dir* "(+ 1 2)\n" "-p" (str *port*)))))))
 
+(deftest doc-test
+  (testing "like clojure.repl/doc"
+    (let [{:keys [status out]} (run-command "doc" "when")]
+      (is (zero? status))
+      (is (str/starts-with? out "clojure.core/when\n([test & body])\nMacro\n  Evaluates test."))))
+  (testing "in a namespace"
+    (is (str/starts-with? (:out (run-command "doc" "--ns" "clojure.core" "str")) "clojure.core/str\n")))
+  (testing "structured"
+    (is (= {:ns "clojure.core" :name "map"}
+           (select-keys (edn/read-string (:out (run-command "doc" "--format" "edn" "map"))) [:ns :name]))))
+  (testing "nothing there"
+    (is (= {:status 1 :out "" :err "neorepl: Nothing called nope in user\n"}
+           (run-command "doc" "nope")))))
+
+(deftest source-test
+  (is (= {:status 0
+          :out "(defmacro when\n  \"Evaluates test. If logical true, evaluates body in an implicit do.\"\n  {:added \"1.0\"}\n  [test & body]\n  (list 'if test (cons 'do body)))\n"
+          :err ""}
+         (run-command "source" "when")))
+  (is (= "not-found" (:status (edn/read-string (:out (run-command "source" "--format" "edn" "nope"))))))
+  (is (= 1 (:status (run-command "source" "nope")))))
+
+(deftest complete-test
+  (is (re-find #"(?m)^mapcat\b" (:out (run-command "complete" "mapc"))))
+  (is (some #(= "mapcat" (:candidate %)) (edn/read-string (:out (run-command "complete" "--format" "edn" "mapc"))))))
+
+(deftest apropos-test
+  (is (re-find #"(?m)^clojure\.core/mapcat$" (:out (run-command "apropos" "^mapc"))))
+  (testing "a regex the server can't make sense of"
+    (let [{:keys [status err]} (run-command "apropos" "(")]
+      (is (= 1 status))
+      (is (str/includes? err "The server couldn't do eval")))))
+
 (deftest discovery-test
   (call-with-temp-dir
    (fn [dir]
@@ -369,6 +402,11 @@
       ["ports" "here"] "Unexpected argument: here"
       ["ports" "-p" "1"] "Unknown option: -p"
       ["check"] "Nothing to check"
+      ["doc" "-p" "1"] "Give a SYM"
+      ["doc" "-p" "1" "map" "inc"] "Unexpected argument: inc"
+      ["source" "-p" "1"] "Give a SYM"
+      ["complete" "-p" "1"] "Give a PREFIX"
+      ["apropos" "-p" "1" "--ns" "user" "x"] "Unknown option: --ns"
       ["evil"] "Unknown command: evil"))
   (testing "usage errors point at the right help"
     (is (str/includes? (:err (run-in *dir* "" "load" "--bogus")) "Run neorepl load --help"))
@@ -391,4 +429,8 @@
     ["sessions" "--help"] "Usage: neorepl sessions"
     ["ports" "--help"] "Usage: neorepl ports"
     ["check" "--help"] "Usage: neorepl check"
-    ["repl" "--help"] "Usage: neorepl [repl]"))
+    ["repl" "--help"] "Usage: neorepl [repl]"
+    ["doc" "--help"] "Usage: neorepl doc"
+    ["source" "--help"] "Usage: neorepl source"
+    ["complete" "--help"] "Usage: neorepl complete"
+    ["apropos" "--help"] "Usage: neorepl apropos"))

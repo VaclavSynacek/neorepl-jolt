@@ -5,6 +5,7 @@
             [neorepl.cli :as cli]
             [neorepl.discovery :as discovery]
             [neorepl.evaluation :as evaluation]
+            [neorepl.features :as features]
             [neorepl.json :as json]
             [neorepl.lexer :as lexer]
             [neorepl.nrepl :as nrepl]
@@ -124,6 +125,14 @@ and the like carry over from one call to the next.")
   (case format
     "edn" (prn data)
     "json" (println (json/write-str data))))
+
+(defn- print-rows
+  "Prints items in format: as edn or json, or as text, with each item's
+  (row item), a vector of strings, in columns."
+  [format row items]
+  (if (= "text" format)
+    (run! println (cli/columns (map row items)))
+    (emit format items)))
 
 (defn- report
   "Prints result, a map with a :status and maybe a :message, in format. Text
@@ -290,11 +299,9 @@ errors and 3 when there's no server to talk to."
                   (no-session name))]
             (report format result)
             (if (= "closed" status) 0 1))
-          (let [named (sessions/named sessions-file client)]
-            (if (= "text" format)
-              (run! println (cli/columns named))
-              (emit format (for [[name id] named] {:name name :id id})))
-            0))))))
+          (do (print-rows format (juxt :name :id) (for [[name id] (sessions/named sessions-file client)]
+                                                     {:name name :id id}))
+              0))))))
 
 (def ^:private ports-options common-options)
 
@@ -314,14 +321,14 @@ does."
 (defn- ports-command [{:keys [format]} args {:keys [dir]}]
   (reject-args args)
   (let [ports (discovery/probe dir)]
-    (if (= "text" format)
-      (run! println (cli/columns (for [{:keys [file port live versions]} ports]
-                                   [file
-                                    (str port)
-                                    (if live
-                                      (str/join ", " (for [[k v] versions] (str (name k) " " v)))
-                                      "not answering")])))
-      (emit format ports))
+    (print-rows format
+                (fn [{:keys [file port live versions]}]
+                  [file
+                   (str port)
+                   (if live
+                     (str/join ", " (for [[k v] versions] (str (name k) " " v)))
+                     "not answering")])
+                ports)
     (if (some :live ports) 0 3)))
 
 (def ^:private check-options common-options)
@@ -385,6 +392,111 @@ can't be read and 2 on usage errors."
       (emit format problems))
     (if (seq problems) 1 0)))
 
+(def ^:private ns-option
+  {:long "--ns" :arg "NS" :parse not-empty :default "user"
+   :doc "Look symbols up in the namespace NS (default: user)"})
+
+(def ^:private lookup-options
+  (concat connection-options [ns-option] common-options))
+
+(defn- the-arg
+  "The one argument in args, named name in the usage."
+  [args name]
+  (when (empty? args)
+    (throw (usage-error (str "Give a " name))))
+  (reject-args (rest args))
+  (first args))
+
+(def ^:private doc-help
+  (help-text
+   "Usage: neorepl doc [options] SYM"
+   "Prints the documentation of SYM, a var or special form, the way
+clojure.repl/doc does. --format edn and json have its arglists, docstring
+and where it's defined."
+   lookup-options
+   discovery-note
+   "Exit status: 0 when SYM is found, 1 when it isn't, 2 on usage errors and 3
+when there's no server to talk to."
+   "Examples:
+  neorepl doc map
+  neorepl doc --ns my.app str/join"))
+
+(defn- report-found
+  "Prints what a lookup found in format, as text through text, and returns
+  the exit status: 0, or 1 after reporting message when it found nothing."
+  [format found text message]
+  (if found
+    (do (if (= "text" format)
+          (println (text found))
+          (emit format found))
+        0)
+    (do (report format {:status "not-found" :message message})
+        1)))
+
+(defn- doc-command [{:keys [ns format] :as options} args {:keys [dir]}]
+  (let [sym (the-arg args "SYM")]
+    (with-client options dir
+      #(report-found format (features/info % sym ns) features/doc-text
+                     (str "Nothing called " sym " in " ns)))))
+
+(def ^:private source-help
+  (help-text
+   "Usage: neorepl source [options] SYM"
+   "Prints the source of the var SYM, the way clojure.repl/source does."
+   lookup-options
+   discovery-note
+   "Exit status: 0 when the source is found, 1 when it isn't, 2 on usage errors
+and 3 when there's no server to talk to."
+   "Examples:
+  neorepl source when
+  neorepl source --ns my.app my.app/start"))
+
+(defn- source-command [{:keys [ns format] :as options} args {:keys [dir]}]
+  (let [sym (the-arg args "SYM")]
+    (with-client options dir
+      #(report-found format (some->> (features/source % sym ns) (hash-map :source)) :source
+                     (str "No source for " sym " in " ns)))))
+
+(def ^:private complete-help
+  (help-text
+   "Usage: neorepl complete [options] PREFIX"
+   "Lists the completions for PREFIX, with their types when the server knows
+them."
+   lookup-options
+   discovery-note
+   "Examples:
+  neorepl complete str/
+  neorepl complete --ns my.app --format json ma"))
+
+(defn- complete-command [{:keys [ns format] :as options} args {:keys [dir]}]
+  (let [prefix (the-arg args "PREFIX")]
+    (with-client options dir
+      (fn [client]
+        (print-rows format (juxt :candidate (comp str :type)) (features/complete client prefix ns))
+        0))))
+
+(def ^:private apropos-options
+  (concat connection-options common-options))
+
+(def ^:private apropos-help
+  (help-text
+   "Usage: neorepl apropos [options] REGEX"
+   "Lists the vars, in every loaded namespace, whose names match REGEX."
+   apropos-options
+   discovery-note
+   "Examples:
+  neorepl apropos split
+  neorepl apropos --format json '^map'"))
+
+(defn- apropos-command [{:keys [format] :as options} args {:keys [dir]}]
+  (let [regex (the-arg args "REGEX")]
+    (with-client options dir
+      (fn [client]
+        (print-rows format
+                    (juxt :name #(str (some-> (:doc %) str/split-lines first)))
+                    (features/apropos client regex))
+        0))))
+
 (def ^:private repl-options
   (concat connection-options
           [(-> session-option
@@ -441,6 +553,14 @@ server to talk to or the connection to it drops."
     :main repl-command}
    {:name "eval" :summary "Evaluate code" :options eval-options :help eval-help :main eval-command}
    {:name "load" :summary "Load a file" :options load-options :help load-help :main load-command}
+   {:name "doc" :summary "Show a var's documentation" :options lookup-options :help doc-help
+    :main doc-command}
+   {:name "source" :summary "Show a var's source" :options lookup-options :help source-help
+    :main source-command}
+   {:name "complete" :summary "List completions" :options lookup-options :help complete-help
+    :main complete-command}
+   {:name "apropos" :summary "Find vars by name" :options apropos-options :help apropos-help
+    :main apropos-command}
    {:name "interrupt" :summary "Interrupt an evaluation" :options interrupt-options :help interrupt-help
     :main interrupt-command}
    {:name "sessions" :summary "List or close sessions" :options sessions-options :help sessions-help
@@ -490,6 +610,7 @@ Run neorepl COMMAND --help for its options."))
           ::usage (do (warn (str (ex-message e) "\nRun neorepl " (when spec (str command " ")) "--help for usage."))
                       2)
           (::nrepl/no-server ::nrepl/disconnected ::nrepl/timeout) (do (warn (ex-message e)) 3)
+          ::features/failed (do (warn (ex-message e)) 1)
           (throw e))))))
 
 (defn -main [& args]
