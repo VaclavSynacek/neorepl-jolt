@@ -1,5 +1,6 @@
 (ns neorepl.lexer-test
-  (:require [clojure.test :refer [are deftest is testing]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [are deftest is testing]]
             [neorepl.lexer :as lexer]))
 
 (defn- pairs
@@ -62,55 +63,95 @@
     (is (= [{:type :open :start 0 :end 1} {:type :symbol :start 1 :end 4}]
            (lexer/tokenize "(abc")))))
 
+(def ^:private incomplete-inputs
+  ["("
+   "(+ 1"
+   "(let [x 1]"
+   "{:a [1 2"
+   "#{"
+   "#(inc %"
+   "\"unterminated"
+   "(str \"abc )"
+   "(+ 1 ; and a comment"
+   "#\"open regex"
+   "'"
+   "(foo) '"
+   "`"
+   "@"
+   "^:private"
+   "^"
+   "^{:doc \"x\"}"
+   "''"
+   "#_"
+   "(+ 1 2) #_"
+   "#'"
+   "#?"
+   "#inst"
+   "#:ns"])
+
+(def ^:private complete-inputs
+  [""
+   "   "
+   "42"
+   "(+ 1 2)"
+   "(str \")\")"
+   "[\\( \\[ \\{]"
+   "(+ 1 2))"
+   ";; just a comment"
+   "#?(:clj 1 :cljs 2)"
+   "(do\n  1\n  2)"
+   "(let [x 1)"
+   "[(]"
+   "{:a 1]"
+   "#'foo"
+   "##Inf"
+   "'sym"
+   "''sym"
+   "^:private x"
+   "^{:doc \"x\"} x"
+   "#_x 1"
+   "#?(:clj 1)"
+   "#inst \"2026\""])
+
+(defn- lines-incomplete?
+  "input-incomplete? for s, added line by line."
+  [s]
+  (lexer/input-incomplete? (reduce lexer/add-line lexer/empty-input (str/split s #"\n" -1))))
+
 (deftest incomplete?-test
-  (are [s] (lexer/incomplete? (lexer/lex s))
-    "("
-    "(+ 1"
-    "(let [x 1]"
-    "{:a [1 2"
-    "#{"
-    "#(inc %"
-    "\"unterminated"
-    "(str \"abc )"
-    "(+ 1 ; and a comment"
-    "#\"open regex"
-    "'"
-    "(foo) '"
-    "`"
-    "@"
-    "^:private"
-    "^"
-    "^{:doc \"x\"}"
-    "''"
-    "#_"
-    "(+ 1 2) #_"
-    "#'"
-    "#?"
-    "#inst"
-    "#:ns")
-  (are [s] (not (lexer/incomplete? (lexer/lex s)))
-    ""
-    "   "
-    "42"
-    "(+ 1 2)"
-    "(str \")\")"
-    "[\\( \\[ \\{]"
-    "(+ 1 2))"
-    ";; just a comment"
-    "#?(:clj 1 :cljs 2)"
-    "(do\n  1\n  2)"
-    "(let [x 1)"
-    "[(]"
-    "{:a 1]"
-    "#'foo"
-    "##Inf"
-    "'sym"
-    "''sym"
-    "^:private x"
-    "^{:doc \"x\"} x"
-    "#_x 1"
-    "#?(:clj 1)"
-    "#inst \"2026\""))
+  (doseq [s incomplete-inputs]
+    (is (lexer/incomplete? s) s))
+  (doseq [s complete-inputs]
+    (is (not (lexer/incomplete? s)) s)))
+
+(deftest add-line-test
+  (testing "line by line, input is as incomplete as all at once"
+    (doseq [s (concat incomplete-inputs complete-inputs)]
+      (is (= (lexer/incomplete? s) (lines-incomplete? s)) s)))
+  (testing "forms and strings across lines"
+    (are [s incomplete] (= incomplete (lines-incomplete? s))
+      "(defn f [x]\n  (inc x)" true
+      "(defn f [x]\n  (inc x))" false
+      "(str \"a\nb" true
+      "(str \"a\nb\")" false
+      "(str \"a\n(\nb\")" false
+      "(str \"a\n\n\")" false
+      "'\nfoo" false
+      "#_\n" true
+      "(foo ; (\n)" false
+      "(str \"a\\\nb\")" false
+      "[\"a\nb\nc\" \"d\ne\"]" false
+      "[\"a\nb\nc\" \"d\ne" true))
+  (testing "broken input stays complete"
+    (is (not (lines-incomplete? "(]\n("))))
+  (testing "unless a string in it is still going"
+    (is (lines-incomplete? ") \"foo"))
+    (is (not (lines-incomplete? ") \"foo\nbar\""))))
+  (testing "takes time in proportion to the input, strings too"
+    (let [lines (concat ["(str \""] (repeat 20000 "a line of a long string") ["\")"])
+          start (System/nanoTime)]
+      (is (not (lexer/input-incomplete? (reduce lexer/add-line lexer/empty-input lines))))
+      (is (< (- (System/nanoTime) start) 2e9)))))
 
 (deftest symbol-at-test
   (let [s "(map inc :kw)"]

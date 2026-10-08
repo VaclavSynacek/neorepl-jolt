@@ -106,7 +106,6 @@ Tooling requests (completion, eldoc, ...) go through a separate cloned session s
 - Keys: rebel-readline's C-x prefix conventions where they exist (C-x C-d doc, C-x C-s source, C-x C-a apropos), which bb's console REPL also follows.
 - Full-screen views for the inspector, test results and stacktrace navigation, built on JLine's `Display` and the alternate screen. No TUI framework.
 - ClojureScript: shadow-cljs and piggieback sessions, switching between clj and cljs. CIDER's history says this is where the dragons live, so it gets its own milestone.
-- Known gap: the plain REPL lexes everything typed so far on every new line, which gets slow for a single form thousands of lines long (a big data literal piped in). Carrying the lexer's state from line to line would fix it; strings are the only tokens that span lines.
 
 ## CLI and agents
 

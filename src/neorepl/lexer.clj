@@ -125,38 +125,93 @@
 (defn- update-prefixes [frames f & args]
   (apply update-in frames [(dec (count frames)) :prefixes] f args))
 
-(defn- scan-forms
-  "Walks tokens keeping a stack of frames, the top level first and then one
-  per open delimiter: {:open index-of-the-delimiter-token :prefixes [...]}.
-  :prefixes holds how many forms each pending prefix (' #_ ^ #inst ...) still
-  needs. When a closing delimiter doesn't match its opener or has none, it
-  stops there and returns the error as a map, the way delimiter-error does."
-  [s tokens]
-  (reduce-kv
-   (fn [frames i {:keys [type] :as token}]
+(def ^:private top-level
+  "The frames before any tokens."
+  [{:prefixes []}])
+
+(defn- scan
+  "Walks tokens of s keeping a stack of frames, starting from frames: the top
+  level first, then one per open delimiter, {:open token :closer \")\"
+  :prefixes [...]}. :prefixes holds how many forms each pending prefix (' #_
+  ^ #inst ...) still needs. When a closing delimiter doesn't match its
+  opener or has none, it stops there and returns the error as a map, the way
+  delimiter-error does.
+
+  Frames don't refer back to s, so scanning can carry on with the tokens of
+  another string."
+  [s tokens frames]
+  (reduce
+   (fn [frames {:keys [type] :as token}]
      (case type
-       :open (conj frames {:open i :prefixes []})
-       :close (let [open (some->> (peek frames) :open (get tokens))]
+       :open (conj frames {:open token :closer (closer s token) :prefixes []})
+       :close (let [{:keys [open closer]} (peek frames)]
                 (cond
                   (nil? open) (reduced {:error :unmatched :close token})
-                  (= (text s token) (closer s open)) (update-prefixes (pop frames) form-done)
-                  :else (reduced {:error :mismatched :open open :close token :expected (closer s open)})))
+                  (= (text s token) closer) (update-prefixes (pop frames) form-done)
+                  :else (reduced {:error :mismatched :open open :close token :expected closer})))
        (:macro-char :discard :reader-macro)
        (update-prefixes frames conj (if (= "^" (text s token)) 2 1))
        :comment frames
        (update-prefixes frames form-done)))
-   [{:prefixes []}] tokens))
+   frames
+   tokens))
+
+(defn- waiting?
+  "Whether frames from scan still wait for something: delimiters left open
+  or a prefix without its form. Errors don't wait, they're for the server to
+  report."
+  [frames]
+  (boolean (and (vector? frames)
+                (or (next frames) (seq (:prefixes (first frames)))))))
+
+(def empty-input
+  "Input with no lines yet, for add-line."
+  {:frames top-level})
+
+(defn- string-end
+  "The index right after the quote that ends a string continuing into line,
+  or nil when the string goes on past it. A backslash at the end of the
+  previous line escaped the newline, so line starts unescaped."
+  [^String line]
+  (loop [i 0]
+    (when (< i (.length line))
+      (case (.charAt line i)
+        \\ (recur (+ i 2))
+        \" (inc i)
+        (recur (inc i))))))
+
+(defn add-line
+  "input with line added. Only the new line gets lexed, so checking input
+  line by line takes time in proportion to its length."
+  [{:keys [frames in-string?] :as input} line]
+  (let [end (when in-string? (string-end line))]
+    (if (and in-string? (not end))
+      input
+      (let [;; A string that ends here is a finished form.
+            frames (cond-> frames (and end (vector? frames)) (update-prefixes form-done))
+            line (cond-> line end (subs end))
+            tokens (tokenize line)
+            ;; Strings are the only tokens that span lines.
+            string? (= :open-string (:type (peek tokens)))]
+        (cond-> {:frames (cond->> frames
+                           ;; Once input is broken, only an open string still
+                           ;; keeps it from being complete.
+                           (vector? frames) (scan line (cond-> tokens string? pop)))}
+          string? (assoc :in-string? true))))))
+
+(defn input-incomplete?
+  "Whether the user isn't done typing the lines added to input: they end
+  inside a string, with delimiters left open or with a prefix such as ' or
+  ^:private still waiting for its form. Mismatched and extra closing
+  delimiters make input complete, since those are errors for the server to
+  report."
+  [{:keys [frames in-string?]}]
+  (or (boolean in-string?) (waiting? frames)))
 
 (defn incomplete?
-  "True when the user isn't done typing: the input ends inside a string, with
-  delimiters left open or with a prefix such as ' or ^:private still waiting
-  for its form. Mismatched and extra closing delimiters make it complete,
-  since those are errors for the server to report."
-  [{:keys [text tokens]}]
-  (let [frames (scan-forms text tokens)]
-    (boolean
-     (or (= :open-string (:type (peek tokens)))
-         (and (vector? frames) (or (next frames) (seq (:prefixes (first frames)))))))))
+  "input-incomplete? for the code in text, typed all at once."
+  [text]
+  (input-incomplete? (add-line empty-input text)))
 
 (def ^:private symbolic-types #{:symbol :keyword :constant})
 
@@ -174,13 +229,10 @@
   outside of lists and when the head of the list isn't a symbol."
   [{:keys [text tokens]} cursor]
   (let [before (into [] (take-while #(< (:start %) cursor)) tokens)
-        frames (scan-forms text before)]
-    (when-let [i (when (vector? frames)
-                   (->> frames
-                        (keep :open)
-                        (filter #(= ")" (closer text (before %))))
-                        last))]
-      (let [head (get before (inc i))]
+        frames (scan text before top-level)]
+    (when-let [open (when (vector? frames)
+                      (->> frames (filter #(= ")" (:closer %))) last :open))]
+      (let [head (some #(when (>= (:start %) (:end open)) %) before)]
         (when (= :symbol (:type head))
           head)))))
 
@@ -194,12 +246,12 @@
     :unmatched    a :close delimiter with nothing to close
     :open-string  the :open string or regex that never ends"
   [{s :text :keys [tokens]}]
-  (let [frames (scan-forms s tokens)]
+  (let [frames (scan s tokens top-level)]
     (cond
       (map? frames) frames
       ;; Always the last token, so anything else went wrong before it.
       (= :open-string (:type (peek tokens))) {:error :open-string :open (peek tokens)}
-      (next frames) {:error :unclosed :open (tokens (:open (second frames)))})))
+      (next frames) {:error :unclosed :open (:open (second frames))})))
 
 (defn position
   "The line and column, both counting from 1, of index in s. Columns count

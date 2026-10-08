@@ -24,13 +24,16 @@
   the input. Incomplete forms at the end go to the server as they are, so
   it can report them."
   []
-  (loop [code nil]
+  (loop [lines []
+         input lexer/empty-input]
     (if-let [line (read-line)]
-      (let [code (if code (str code "\n" line) line)]
-        (if (lexer/incomplete? (lexer/lex code))
-          (recur code)
-          code))
-      code)))
+      (let [lines (conj lines line)
+            input (lexer/add-line input line)]
+        (if (lexer/input-incomplete? input)
+          (recur lines input)
+          (str/join "\n" lines)))
+      (when (seq lines)
+        (str/join "\n" lines)))))
 
 (defn- on-sigint
   "Calls f on SIGINT, returning the handler it replaces."

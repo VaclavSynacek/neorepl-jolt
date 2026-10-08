@@ -89,7 +89,7 @@
     (parse [_ line cursor context]
       (when (and (= Parser$ParseContext/ACCEPT_LINE context)
                  (not @raw?)
-                 (lexer/incomplete? (lexer/lex line)))
+                 (lexer/incomplete? line))
         (throw (EOFError. -1 -1 "Incomplete form")))
       (parsed-line line cursor))))
 
