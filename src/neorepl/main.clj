@@ -13,6 +13,7 @@
             [neorepl.nrepl :as nrepl]
             [neorepl.render :as render]
             [neorepl.sessions :as sessions]
+            [neorepl.shutdown :as shutdown]
             [neorepl.xdg :as xdg])
   (:import (java.io File IOException)))
 
@@ -105,14 +106,18 @@ and the like carry over from one call to the next.")
     host (throw (usage-error "--host needs a --port"))
     :else (discovery/connect dir)))
 
+(defn- call-with-client
+  "Calls f with client, and closes it after."
+  [client f]
+  (try
+    (f client)
+    (finally
+      (nrepl/close client))))
+
 (defn- with-client
   "Calls f with a client connected the way options say, and closes it after."
   [options dir f]
-  (let [client (connect options dir)]
-    (try
-      (f client)
-      (finally
-        (nrepl/close client)))))
+  (call-with-client (connect options dir) f))
 
 (defn- print-err
   "Prints text to stderr in one go, so lines from several threads don't
@@ -154,6 +159,53 @@ and the like carry over from one call to the next.")
     ;; Printing from the thread that follows the server's output, with this
     ;; one's *out* and *err*.
     (jack-in/with-server dir command (bound-fn* on-line) f)))
+
+(defn- with-started-server
+  "Calls f with a client for a server started for project, the way
+  with-server does. What the server prints goes where output nobody asked
+  for goes, like an evaluation's that comes late, and to stderr before
+  something takes that over and after f."
+  [project options f]
+  (let [output (atom print-err-line)]
+    (with-server project options #(@output %)
+      (fn [{:keys [host port]}]
+        (call-with-client
+         (-> (nrepl/connect {:host host :port port
+                             :on-unclaimed (fn [{:keys [out err]}]
+                                             (some-> (or out err) print-err))})
+             (assoc :project-dir (:dir project)))
+         (fn [client]
+           (reset! output #(nrepl/unclaimed client {:err (str % "\n")}))
+           (try
+             (f client)
+             (finally
+               (reset! output print-err-line)))))))))
+
+(defn- with-repl-client
+  "Calls f with a client for the REPL: connected the way options say, or to
+  the nearest server, or else to one started for the project in dir, which
+  stops when f returns."
+  [{:keys [url host port tool aliases] :as options} dir f]
+  (let [connect? (or url host port)]
+    (when (and (or tool aliases) connect?)
+      (throw (usage-error "--tool and --aliases don't go with --port, --host or --url")))
+    (if connect?
+      (with-client options dir f)
+      (let [project (delay (jack-in/find-project dir tool))
+            client (try
+                     (discovery/connect dir)
+                     (catch clojure.lang.ExceptionInfo e
+                       (cond
+                         (not= ::nrepl/no-server (:type (ex-data e))) (throw e)
+                         @project nil
+                         :else (throw (ex-info (str (ex-message e) ", nor a " (jack-in/project-files tool)
+                                                    " to start one for")
+                                               (ex-data e))))))]
+        (if client
+          (do (when (or tool aliases)
+                (warn "There's a server running already, so --tool and --aliases don't apply"))
+              (call-with-client client f))
+          (with-started-server @project options f))))))
 
 (defn- end-err-line
   "Ends the line err, the evaluation's stderr output, left unfinished, so
@@ -621,8 +673,9 @@ usage errors and 3 when there's no server to talk to."
   (concat connection-options
           [(-> session-option
                (dissoc :default)
-               (assoc :doc "Use the session called NAME instead of a fresh one"))
-           help-option]))
+               (assoc :doc "Use the session called NAME instead of a fresh one"))]
+          jack-in-options
+          [help-option]))
 
 (def ^:private repl-help
   (help-text
@@ -639,35 +692,34 @@ does. Ctrl-C interrupts an evaluation there too, and ends the REPL when
 nothing's running."
    repl-options
    discovery-note
-   "Exit status: 0 when the REPL ends, 2 on usage errors and 3 when there's no
-server to talk to or the connection to it drops."
+   "Without a server to connect to, it starts one for the project, the way
+neorepl server does, and stops it when the REPL ends. --tool and --aliases
+say how."
+   "Exit status: 0 when the REPL ends, 1 when a server fails to start, 2 on
+usage errors and 3 when there's no server to talk to or the connection to it
+drops."
    "Examples:
   neorepl
   neorepl -p 7888
-  neorepl --session default"))
+  neorepl --session default
+  neorepl --aliases :dev:test"))
 
 (defn- repl-command [{:keys [session] :as options} args {:keys [dir sessions-file] :as ctx}]
   (reject-args args)
-  (with-client options dir
+  (with-repl-client options dir
     (fn [client]
       (let [id (if session
                  (sessions/ensure! sessions-file client session)
                  (nrepl/clone-session client))
-            close #(when-not session
-                     ;; There's nothing to close when the connection is gone.
-                     (try (nrepl/close-session client id) (catch Exception _ nil)))
-            ;; A fresh session goes with the REPL, even when it gets killed.
-            hook (Thread. ^Runnable close)
-            runtime (Runtime/getRuntime)
             ;; Loaded only when needed, along with JLine.
             start (requiring-resolve 'neorepl.repl/start)]
-        (.addShutdownHook runtime hook)
-        (try
-          (start client id (select-keys ctx [:dir :history-dir :terminal :editor-command]))
-          0
-          (finally
-            (.removeShutdownHook runtime hook)
-            (close)))))))
+        ;; A fresh session goes with the REPL, even when it gets killed.
+        (shutdown/call-with-cleanup
+         #(when-not session
+            ;; There's nothing to close when the connection is gone.
+            (try (nrepl/close-session client id) (catch Exception _ nil)))
+         #(do (start client id (select-keys ctx [:dir :history-dir :terminal :editor-command]))
+              0))))))
 
 (def ^:private server-options
   (concat jack-in-options

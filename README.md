@@ -31,16 +31,17 @@ to open a definition in your `$EDITOR`, and `,help` for the rest.
 Without a terminal, say in a pipe or Emacs' `M-x shell`, it works like
 `clojure.main`'s REPL instead.
 
-`neorepl server` starts an nREPL server for the project, the way CIDER's
-jack-in does, and keeps it up until you stop it, for editors, coding agents
-and `neorepl eval` to share. The project's build tool runs it, with
-cider-nrepl: Leiningen for a `project.clj`, the Clojure CLI for a `deps.edn`
-and babashka, which has CIDER's essentials built in, for a `bb.edn`.
-`--tool` picks another one and `--aliases` adds deps.edn aliases or
-Leiningen profiles:
+With no server to connect to, `neorepl` starts one for the project, the way
+CIDER's jack-in does, and stops it when the REPL ends. The project's build
+tool runs it, with cider-nrepl: Leiningen for a `project.clj`, the Clojure
+CLI for a `deps.edn` and babashka, which has CIDER's essentials built in, for
+a `bb.edn`. `--tool` picks another one and `--aliases` adds deps.edn aliases
+or Leiningen profiles. `neorepl server` starts one that stays up until you
+stop it, for editors, coding agents and `neorepl eval` to share:
 
 ```shell
-neorepl server --aliases :dev:test --port 7888
+neorepl --aliases :dev:test
+neorepl server --port 7888
 ```
 
 `neorepl eval` evaluates code on the same server:

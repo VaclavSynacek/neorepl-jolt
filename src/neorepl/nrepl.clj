@@ -172,6 +172,12 @@
   [client f]
   (reset! (:on-unclaimed client) f))
 
+(defn unclaimed
+  "Hands response to whatever handles the responses nobody claims, as if
+  the server had sent it unasked."
+  [client response]
+  (@(:on-unclaimed client) response))
+
 (defn clone-session
   "Creates a session, a copy of session when given one, and returns its id."
   ([client] (clone-session client nil))

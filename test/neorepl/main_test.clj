@@ -283,6 +283,53 @@
   (testing "the default command"
     (is (= "user=> 3\nuser=> \n" (:out (run-in *dir* "(+ 1 2)\n" "-p" (str *port*)))))))
 
+(deftest jack-in-test
+  (testing "without a server, the REPL starts one for the project"
+    (call-with-temp-dir
+     (fn [dir]
+       (spit-file dir "bb.edn" "{}")
+       (let [{:keys [status out err]} (run-in dir "(+ 1 2)\n" "repl")]
+         (is (= 0 status))
+         (is (= "user=> 3\nuser=> \n" out))
+         (is (str/includes? err "neorepl: Starting an nREPL server in "))
+         (is (str/includes? err "Started nREPL server"))
+         ;; Windows has no SIGTERM, so the server has no say in it there.
+         (when-not (test-server/windows?)
+           (testing "and stops it after"
+             (is (not (.exists (io/file dir ".nrepl-port"))))))))))
+  (testing "nor a project to start one for"
+    (call-with-temp-dir
+     (fn [dir]
+       (let [{:keys [status err]} (run-in dir "" "repl")]
+         (is (= 3 status))
+         (is (str/includes? err "nor a project.clj, deps.edn or bb.edn to start one for"))))))
+  (testing "options that don't go together"
+    (are [args message] (let [{:keys [status err]} (apply run-in *dir* "" "repl" args)]
+                          (and (= 2 status) (str/includes? err message)))
+      ["--aliases" ":dev" "-p" "1234"] "--tool and --aliases don't go with"
+      ["--tool" "bb" "--url" "nrepl://localhost:1234"] "--tool and --aliases don't go with")))
+
+(deftest kill-jack-in-test
+  ;; Windows has no SIGTERM, so destroy skips the shutdown hooks there.
+  (when-not (test-server/windows?)
+    (testing "killing a REPL mid-evaluation stops the server it started"
+      (call-with-temp-dir
+       (fn [dir]
+         (spit-file dir "bb.edn" "{}")
+         (let [process (start-neorepl-in dir "repl")
+               out (io/reader (.getInputStream process))
+               ;; Read as it comes, since destroy closes it.
+               err (future (slurp (.getErrorStream process)))]
+           (doto (io/writer (.getOutputStream process))
+             (.write "(do (println :sleeping) (Thread/sleep 20000))\n")
+             (.flush))
+           (is (str/ends-with? (.readLine ^java.io.BufferedReader out) ":sleeping"))
+           (is (.exists (io/file dir ".nrepl-port")))
+           (.destroy process)
+           (is (.waitFor process 10 TimeUnit/SECONDS))
+           (is (not (.exists (io/file dir ".nrepl-port"))))
+           (is (not (str/includes? @err "Exception")))))))))
+
 (deftest server-test
   ;; Windows has no SIGTERM, so stopping neorepl there leaves the server.
   (when-not (test-server/windows?)
