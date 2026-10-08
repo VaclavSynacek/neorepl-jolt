@@ -303,11 +303,15 @@
        (let [{:keys [status err]} (run-in dir "" "repl")]
          (is (= 3 status))
          (is (str/includes? err "nor a project.clj, deps.edn or bb.edn to start one for"))))))
+  (testing "or one in neorepl's own process"
+    (is (= {:status 0 :out "user=> 3\nuser=> \n" :err ""}
+           (run-in *dir* "(+ 1 2)\n" "repl" "--in-process"))))
   (testing "options that don't go together"
     (are [args message] (let [{:keys [status err]} (apply run-in *dir* "" "repl" args)]
                           (and (= 2 status) (str/includes? err message)))
+      ["--in-process" "-p" "1234"] "--in-process doesn't go with --port"
       ["--aliases" ":dev" "-p" "1234"] "--tool and --aliases don't go with"
-      ["--tool" "bb" "--url" "nrepl://localhost:1234"] "--tool and --aliases don't go with")))
+      ["--tool" "bb" "--in-process"] "--tool and --aliases don't go with")))
 
 (deftest kill-jack-in-test
   ;; Windows has no SIGTERM, so destroy skips the shutdown hooks there.

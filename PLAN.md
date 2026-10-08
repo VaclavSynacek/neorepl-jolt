@@ -77,7 +77,7 @@ Runtime deps: `org.clojure/clojure`, `nrepl/nrepl`, `org.jline/jline` 4.x. That'
 
 - Connect. `neorepl` looks for `.nrepl-port` (and `.shadow-cljs/nrepl.port`, etc.) in the current directory and its parents, checks the server is alive and connects. Also `--host`/`--port` and the URLs nREPL 1.8's cmdline understands (`nrepl://`, `nrepls://`, `nrepl+unix:`). `nrepl.cmdline` isn't available in bb, so we map URLs to `nrepl.core/connect` options ourselves; it's a few lines. `nrepl.tls` does load in bb.
 - Jack-in. No server found: detect the project (`project.clj`, `deps.edn`, `bb.edn`, nearest first, in that order within a directory; `shadow-cljs.edn` and friends to come), start a server with nREPL and cider-nrepl injected, connect, and shut it down when the REPL ends. Zero to REPL in one command, like `lein repl` today. CIDER's Windows quoting lessons still need porting.
-- In-process. `clojure -M:neorepl` starts an nREPL server in the current JVM on a random port and connects over loopback. For people who want a single process.
+- In-process. `neorepl --in-process` starts an nREPL server in neorepl's own process, with cider-nrepl when it's on the classpath, and connects over loopback. With neorepl as a dependency, `clojure -M:neorepl` gets you a single JVM.
 - Headless. `neorepl server` is jack-in without the REPL; the server writes the port file and stays up until neorepl gets Ctrl-C or SIGTERM. For agents and editor users.
 
 ## The feature ladder

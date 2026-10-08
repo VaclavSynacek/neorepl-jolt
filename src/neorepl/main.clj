@@ -181,16 +181,35 @@ and the like carry over from one call to the next.")
              (finally
                (reset! output print-err-line)))))))))
 
+(defn- with-in-process-server
+  "Calls f with a client for a server started in this process, with
+  cider-nrepl when it's on the classpath, and stops the server after."
+  [dir f]
+  (let [start-server (requiring-resolve 'nrepl.server/start-server)
+        stop-server (requiring-resolve 'nrepl.server/stop-server)
+        ;; Only when it's there, so failing to load it isn't kept quiet.
+        handler (when (io/resource "cider/nrepl.clj")
+                  @(requiring-resolve 'cider.nrepl/cider-nrepl-handler))
+        server (apply start-server :bind "127.0.0.1" :port 0 (when handler [:handler handler]))]
+    (try
+      (with-client {:port (:port server)} dir f)
+      (finally
+        (stop-server server)))))
+
 (defn- with-repl-client
   "Calls f with a client for the REPL: connected the way options say, or to
   the nearest server, or else to one started for the project in dir, which
-  stops when f returns."
-  [{:keys [url host port tool aliases] :as options} dir f]
+  stops when f returns. With :in-process, to a server in this process."
+  [{:keys [url host port tool aliases in-process] :as options} dir f]
   (let [connect? (or url host port)]
-    (when (and (or tool aliases) connect?)
-      (throw (usage-error "--tool and --aliases don't go with --port, --host or --url")))
-    (if connect?
-      (with-client options dir f)
+    (when (and in-process connect?)
+      (throw (usage-error "--in-process doesn't go with --port, --host or --url")))
+    (when (and (or tool aliases) (or in-process connect?))
+      (throw (usage-error "--tool and --aliases don't go with --port, --host, --url or --in-process")))
+    (cond
+      in-process (with-in-process-server dir f)
+      connect? (with-client options dir f)
+      :else
       (let [project (delay (jack-in/find-project dir tool))
             client (try
                      (discovery/connect dir)
@@ -675,7 +694,9 @@ usage errors and 3 when there's no server to talk to."
                (dissoc :default)
                (assoc :doc "Use the session called NAME instead of a fresh one"))]
           jack-in-options
-          [help-option]))
+          [{:long "--in-process"
+            :doc "Start the server in neorepl's own process"}
+           help-option]))
 
 (def ^:private repl-help
   (help-text
@@ -694,7 +715,7 @@ nothing's running."
    discovery-note
    "Without a server to connect to, it starts one for the project, the way
 neorepl server does, and stops it when the REPL ends. --tool and --aliases
-say how."
+say how, and with --in-process the server runs in neorepl's own process."
    "Exit status: 0 when the REPL ends, 1 when a server fails to start, 2 on
 usage errors and 3 when there's no server to talk to or the connection to it
 drops."
