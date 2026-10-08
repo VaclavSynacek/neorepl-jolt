@@ -8,18 +8,6 @@
   (:import (java.io File IOException)
            (java.nio.file CopyOption Files StandardCopyOption)))
 
-(defn cache-file
-  "sessions.edn under the XDG cache directory: xdg-cache-home when it's an
-  absolute path, as the spec says, ~/.cache otherwise."
-  ^File [xdg-cache-home user-home]
-  (io/file (if (and xdg-cache-home (.isAbsolute (io/file xdg-cache-home)))
-             xdg-cache-home
-             (io/file user-home ".cache"))
-           "neorepl" "sessions.edn"))
-
-(defn default-file ^File []
-  (cache-file (System/getenv "XDG_CACHE_HOME") (System/getProperty "user.home")))
-
 (defn- read-cache [^File file]
   (let [cache (when (.isFile file)
                 ;; It's only a cache, so a broken one counts as empty.

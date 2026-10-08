@@ -2,23 +2,13 @@
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
-            [clojure.test :refer [are deftest is testing use-fixtures]]
+            [clojure.test :refer [deftest is testing use-fixtures]]
             [neorepl.nrepl :as nrepl]
             [neorepl.sessions :as sessions]
             [neorepl.test-server :as test-server :refer [*port* call-with-temp-dir spit-file]])
   (:import (java.io StringWriter)))
 
 (use-fixtures :once (test-server/fixture))
-
-(deftest cache-file-test
-  (let [home (.getAbsolutePath (io/file "home"))
-        xdg (.getAbsolutePath (io/file "xdg"))]
-    (is (= (io/file xdg "neorepl" "sessions.edn") (sessions/cache-file xdg home)))
-    (testing "~/.cache when XDG_CACHE_HOME is unset, empty or relative"
-      (are [x] (= (io/file home ".cache" "neorepl" "sessions.edn") (sessions/cache-file x home))
-        nil
-        ""
-        "cache"))))
 
 (deftest ensure!-test
   (call-with-temp-dir

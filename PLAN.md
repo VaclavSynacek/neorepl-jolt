@@ -106,6 +106,7 @@ Tooling requests (completion, eldoc, ...) go through a separate cloned session s
 - Keys: rebel-readline's C-x prefix conventions where they exist (C-x C-d doc, C-x C-s source, C-x C-a apropos), which bb's console REPL also follows.
 - Full-screen views for the inspector, test results and stacktrace navigation, built on JLine's `Display` and the alternate screen. No TUI framework.
 - ClojureScript: shadow-cljs and piggieback sessions, switching between clj and cljs. CIDER's history says this is where the dragons live, so it gets its own milestone.
+- Known gap: the plain REPL lexes everything typed so far on every new line, which gets slow for a single form thousands of lines long (a big data literal piped in). Carrying the lexer's state from line to line would fix it; strings are the only tokens that span lines.
 
 ## CLI and agents
 
@@ -147,17 +148,20 @@ Prior art to beat: Bruce Hauman's clojure-mcp-light (`clj-nrepl-eval`, session p
 deps.edn            clojure, nrepl, jline; aliases for tests and in-process mode
 bb.edn              same paths, no deps (bb bundles them), bb tasks
 src/neorepl/
-  main.clj          entry point, subcommand dispatch
-  cli.clj           arg parsing, output formats
+  main.clj          entry point, subcommands
+  cli.clj           arg parsing, help text layout
   nrepl.clj         on top of nrepl.core: URLs, sessions, routing responses by id, async output
+  evaluation.clj    following an evaluation: output, stdin, interrupts, output caps, the result
+  sessions.clj      named sessions that outlive CLI calls
   discovery.clj     port files, liveness checks
   features.clj      the feature ladder; the API every front end uses
   jack_in.clj       project detection, server command building, process lifecycle
-  lexer.clj         completeness, highlighting, symbol at point
-  editor.clj        JLine glue; the only namespace that imports org.jline
+  lexer.clj         completeness, highlighting, symbol at point, delimiter checks
+  editor.cljc       JLine glue; the only namespace that imports org.jline
   repl.clj          interactive loop and comma commands
   render.clj        colors, themes, errors, test reports
   json.clj          minimal JSON
+  xdg.clj           where the cache and history files go
 ```
 
 Size goal: the core stays around 3-4k lines through 1.0. If it grows well past that, something probably belongs on the server.
@@ -231,9 +235,10 @@ Time to an interactive prompt (connect, `describe`, two clones, JLine setup): ~2
 Findings that change things:
 
 - JDK 25 without `--enable-native-access=ALL-UNNAMED` prints the restricted-method warning, and JLine's first redraw half-overwrites it. With the flag it's clean. Hence the Java 17 floor above. The uberjar can also carry `Enable-Native-Access: ALL-UNNAMED` in its manifest.
-- On the JVM, JLine logs a warning at startup because our `ParsedLine` isn't a `CompletingParsedLine`. bb doesn't expose `CompletingParsedLine`, so we can't reify it there. Either borkdude adds it or we lower the `org.jline` JUL logger to SEVERE on the JVM, the way REPLy does.
+- On the JVM, JLine logs a warning at startup because our `ParsedLine` isn't a `CompletingParsedLine`. bb doesn't expose `CompletingParsedLine`, so we can't reify it there, and bb has no `java.util.logging` to quiet the warning with. editor.cljc reifies `CompletingParsedLine` on the JVM and plain `ParsedLine` on bb, behind a `:bb` reader conditional.
 - On an interrupted `Thread/sleep` the server sometimes sends an `InterruptedException` error and sometimes just `interrupted`, depending on timing. The client has to render both sensibly.
 - `%P` in `SECONDARY_PROMPT_PATTERN` pads with the character that follows it (`%P#` gives `###`), so it's `%P #_=> `.
+- On bb, Ctrl-C during a `readLine` arrives twice: as a signal that interrupts the reading thread, and as a `^C` character for JLine's `interrupt` widget. The second one interrupted the next read too, so the editor drops a `^C` still waiting after an interrupt. Worth raising with borkdude along with the classes below.
 
 Not covered yet: Linux (Docker wasn't running) and Windows. Neither should surprise us given bb ships JLine on both, but Windows needs a real check before 0.1. Concurrent tooling requests during an eval also stay untested, since the interactive REPL can't issue them yet.
 

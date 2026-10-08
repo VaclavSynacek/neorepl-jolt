@@ -136,6 +136,11 @@
         (testing "output that arrives after done goes to on-unclaimed"
           (eval-in client session "(future (Thread/sleep 100) (println \"late\"))")
           (is (= "late\n" (:out (deref unclaimed 5000 nil)))))
+        (testing "or wherever on-unclaimed! says"
+          (let [elsewhere (promise)]
+            (nrepl/on-unclaimed! client #(when (:out %) (deliver elsewhere %)))
+            (eval-in client session "(future (Thread/sleep 100) (println \"later\"))")
+            (is (= "later\n" (:out (deref elsewhere 5000 nil))))))
         (testing "interrupting a running evaluation"
           (let [started (promise)
                 done (promise)

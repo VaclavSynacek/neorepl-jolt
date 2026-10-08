@@ -3,8 +3,9 @@
 
   A client owns one connection and one reader thread. The reader hands every
   response to the handler registered for its message id. Responses nobody
-  claims go to the :on-unclaimed handler given to `connect`: typically output
-  that a future prints after the evaluation that started it is done.
+  claims go to the client's unclaimed handler, from `connect` or
+  `on-unclaimed!`: typically output that a future prints after the
+  evaluation that started it is done.
 
   Values stay strings. Reading them on the client would break on truncated
   output and on tagged literals the client doesn't know about."
@@ -43,7 +44,7 @@
   "The reader thread's loop. Once the connection is gone, the pending handler
   map becomes nil and every handler that was still waiting gets a final
   response with the statuses done and disconnected."
-  [{:keys [transport pending]} on-unclaimed on-error]
+  [{:keys [transport pending on-unclaimed]} on-error]
   (let [call (fn [handler response]
                ;; A broken handler mustn't take the connection down with it.
                (try (handler response) (catch Throwable e (on-error e))))]
@@ -55,7 +56,7 @@
           (if-let [handler (get @pending id)]
             (do (when (done? response) (swap! pending dissoc id))
                 (call handler response))
-            (call on-unclaimed response))
+            (call @on-unclaimed response))
           (recur)))
       ;; The socket went away, the server sent garbage or close interrupted us.
       (catch Throwable _))
@@ -119,8 +120,9 @@
   (let [client {:transport (if socket
                              (nrepl/connect :socket socket)
                              (nrepl/connect :host host :port port))
-                :pending (atom {})}]
-    (assoc client :reader (doto (Thread. ^Runnable #(read-responses client on-unclaimed on-error)
+                :pending (atom {})
+                :on-unclaimed (atom on-unclaimed)}]
+    (assoc client :reader (doto (Thread. ^Runnable #(read-responses client on-error)
                                          "neorepl-nrepl-reader")
                             (.setDaemon true)
                             (.start)))))
@@ -163,6 +165,11 @@
       (catch Throwable e
         (close client)
         (throw (no-server e))))))
+
+(defn on-unclaimed!
+  "Has f handle the responses nobody claims from now on."
+  [client f]
+  (reset! (:on-unclaimed client) f))
 
 (defn clone-session
   "Creates a session, a copy of session when given one, and returns its id."

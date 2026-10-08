@@ -18,9 +18,9 @@
      (spit-file dir "app/.shadow-cljs/nrepl.port" "3333")
      (spit-file dir "app/src/.nrepl-port" "not a port")
      (testing "nearest directory first, .nrepl-port before shadow-cljs's"
-       (is (= [{:file (canonical dir "app/.nrepl-port") :port 2222}
-               {:file (canonical dir "app/.shadow-cljs/nrepl.port") :port 3333}
-               {:file (canonical dir ".nrepl-port") :port 1111}]
+       (is (= [{:file (canonical dir "app/.nrepl-port") :port 2222 :dir (canonical dir "app")}
+               {:file (canonical dir "app/.shadow-cljs/nrepl.port") :port 3333 :dir (canonical dir "app")}
+               {:file (canonical dir ".nrepl-port") :port 1111 :dir (canonical dir ".")}]
               (take 3 (discovery/find-ports (io/file dir "app/src")))))))))
 
 (deftest connect-test
@@ -39,12 +39,13 @@
        (let [client (discovery/connect (io/file dir "app"))]
          (try
            (is (= (str "127.0.0.1:" *port*) (:address client)))
+           (is (= (canonical dir ".") (:project-dir client)))
            (finally
              (nrepl/close client)))))
      (testing "probing tells the live from the stale"
        (let [[stale live] (discovery/probe (io/file dir "app"))]
-         (is (= {:file (canonical dir "app/.nrepl-port") :live false} (dissoc stale :port)))
-         (is (= {:file (canonical dir ".nrepl-port") :port *port* :live true} (dissoc live :versions)))
+         (is (= {:file (canonical dir "app/.nrepl-port") :live false} (dissoc stale :port :dir)))
+         (is (= {:file (canonical dir ".nrepl-port") :port *port* :live true} (dissoc live :versions :dir)))
          (is (string? (:nrepl (:versions live))))))
      (testing "only stale port files"
        (spit-file dir ".nrepl-port" (str (test-server/free-port)))

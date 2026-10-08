@@ -10,11 +10,15 @@
   "The statuses that make an evaluation fail, the most telling first."
   ["disconnected" "interrupted" "eval-error" "error"])
 
-(defn- add-response [acc {:keys [value out err ns ex root-ex status]}]
+(defn- add-response
+  "Adds response to acc, keeping only the size of its output unless collect?"
+  [acc {:keys [value out err ns ex root-ex status]} collect?]
   (cond-> (update acc :statuses into status)
-    value (update :values conj value)
-    (seq out) (-> (update :out conj out) (update :out-size + (count out)))
-    (seq err) (-> (update :err conj err) (update :err-size + (count err)))
+    (and collect? value) (update :values conj value)
+    (and collect? (seq out)) (update :out conj out)
+    (and collect? (seq err)) (update :err conj err)
+    out (update :out-size + (count out))
+    err (update :err-size + (count err))
     ns (assoc :ns ns)
     (and ex (not (:ex acc))) (assoc :ex ex :root-ex root-ex)))
 
@@ -77,14 +81,22 @@
 
   Interrupts the evaluation when neorepl gets killed. Options:
 
+    :on-send      called with the message id once the message is out
     :on-response  called with each response as it arrives
-    :read-line    called when the code reads *in*, for the next line or nil
-                  at end of input (read-line by default)
+    :read-line    called when the code reads *in*, for the next line, nil
+                  at end of input or :interrupted to leave the read
+                  unanswered, since the evaluation's being interrupted
+                  (read-line by default)
     :timeout      seconds after which to interrupt the evaluation
     :max-output   cuts each value at that many characters, and stdout and
-                  stderr too, marking the result :truncated"
-  [client {:keys [session] :as msg} {:keys [on-response read-line timeout max-output]
-                                     :or {on-response (fn [_]) read-line clojure.core/read-line}}]
+                  stderr too, marking the result :truncated
+    :collect?     false to leave :values, :out and :err empty, for callers
+                  that print the responses as they come (true by default)"
+  [client {:keys [session] :as msg} {:keys [on-send on-response read-line timeout max-output collect?]
+                                     :or {on-send (fn [_])
+                                          on-response (fn [_])
+                                          read-line clojure.core/read-line
+                                          collect? true}}]
   (let [deadline (when timeout (+ (System/currentTimeMillis) (long (* 1000 timeout))))
         responses (LinkedBlockingQueue.)
         ;; The server cuts values itself, sparing us an endless (range), but
@@ -94,6 +106,7 @@
         ;; Otherwise the evaluation keeps the session busy for later calls.
         hook (Thread. ^Runnable #(interrupt! client session id))
         runtime (Runtime/getRuntime)]
+    (on-send id)
     (.addShutdownHook runtime hook)
     (try
       (loop [acc {:values [] :out [] :err [] :out-size 0 :err-size 0 :statuses #{}}]
@@ -104,10 +117,12 @@
                 truncated? (and max-output
                                 (or (not= fitted response)
                                     (nrepl/status? response "nrepl.middleware.print/truncated")))
-                acc (cond-> (add-response acc fitted) truncated? (assoc :truncated? true))]
+                acc (cond-> (add-response acc fitted collect?) truncated? (assoc :truncated? true))]
             (on-response fitted)
             (when (nrepl/status? response "need-input")
-              (send-stdin client session (read-line)))
+              (let [line (read-line)]
+                (when-not (= :interrupted line)
+                  (send-stdin client session line))))
             (if (nrepl/done? response)
               (result acc nil)
               (recur acc)))

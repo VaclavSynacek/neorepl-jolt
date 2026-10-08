@@ -17,8 +17,10 @@
   XDG_CACHE_HOME."
   nil)
 
-(defn- sessions-file []
-  (sessions/cache-file (str *dir*) nil))
+(defn- sessions-file
+  "Where neorepl keeps sessions with XDG_CACHE_HOME set to *dir*."
+  []
+  (io/file *dir* "neorepl" "sessions.edn"))
 
 (use-fixtures :once
   (test-server/fixture)
@@ -240,6 +242,35 @@
       (is (= {:status "ok" :values ["(0 1 2"] :out "" :err "" :ns nil :truncated true}
              (edn/read-string (:out (run-command "load" "--format" "edn" "--max-output" "6" (str file)))))))))
 
+(deftest repl-test
+  (let [repl #(apply run-in *dir* %1 "repl" "-p" (str *port*) %&)]
+    (testing "without a terminal, prompts and results go to stdout"
+      (is (= {:status 0
+              :out "user=> 3\nuser=> :hi\nnil\nuser=> #'user/repl-x\nuser=> 42\nuser=> \n"
+              :err ""}
+             (repl "(+ 1 2)\n(println :hi)\n(def repl-x\n  42)\nrepl-x\n"))))
+    (testing "the prompt follows the namespace"
+      (is (= "user=> nil\nrepl.scratch=> \n"
+             (:out (repl "(do (in-ns 'repl.scratch) nil)\n")))))
+    (testing "values get pretty printed"
+      (is (re-find #"(?m)^ :b" (:out (repl "{:a (range 30) :b (range 30)}\n")))))
+    (testing "reads from *in* take the next line"
+      (is (= "user=> \"hello\"\nuser=> \n" (:out (repl "(read-line)\nhello\n")))))
+    (testing ":repl/quit"
+      (is (= "user=> \n" (:out (repl ":repl/quit\n(println :unreachable)\n")))))
+    (testing "a session of its own, closed at the end"
+      (with-client [client {:port *port*}]
+        (let [sessions #(set (some :sessions (nrepl/request client {:op "ls-sessions"})))
+              before (sessions)]
+          (repl "(in-ns 'repl.elsewhere)\n")
+          (is (= before (sessions)))
+          (is (= "user" (:ns (edn/read-string (:out (run "--format" "edn" "1")))))))))
+    (testing "or a named one"
+      (repl "(in-ns 'repl.named)\n" "-s" "repl-named")
+      (is (= "repl.named" (:ns (edn/read-string (:out (run "-s" "repl-named" "--format" "edn" "1"))))))))
+  (testing "the default command"
+    (is (= "user=> 3\nuser=> \n" (:out (run-in *dir* "(+ 1 2)\n" "-p" (str *port*)))))))
+
 (deftest discovery-test
   (call-with-temp-dir
    (fn [dir]
@@ -266,8 +297,8 @@
                                          "\\Q" live "\\E +" *port* " +.*nrepl \\d")) out))))
        (testing "structured"
          (let [[s l] (edn/read-string (:out (run-in app "" "ports" "--format" "edn")))]
-           (is (= {:file stale :live false} (dissoc s :port)))
-           (is (= {:file live :port *port* :live true} (dissoc l :versions)))
+           (is (= {:file stale :live false} (dissoc s :port :dir)))
+           (is (= {:file live :port *port* :live true} (dissoc l :versions :dir)))
            (is (string? (get-in l [:versions :nrepl])))))
        (testing "nothing answering"
          (spit live (str (test-server/free-port)))
@@ -330,6 +361,8 @@
       ["load" "-p" "1" "/does/not/exist.clj"] "No such file"
       ["load" "-f" "x.clj"] "Unknown option: -f"
       ["interrupt" "-p" "1" "now"] "Unexpected argument: now"
+      ["repl" "-p" "1" "now"] "Unexpected argument: now"
+      ["-p" "1" "--format" "edn"] "Unknown option: --format"
       ["sessions" "-p" "1" "open"] "Unexpected argument: open"
       ["sessions" "-p" "1" "close"] "Give the NAME of the session to close"
       ["sessions" "-p" "1" "close" "a" "b"] "Unexpected argument: b"
@@ -348,13 +381,14 @@
 (deftest help-test
   (are [args text] (let [{:keys [status out]} (apply run-in *dir* "" args)]
                      (and (zero? status) (str/includes? out text)))
-    [] "Commands:"
+    ["help"] "Commands:"
     ["--help"] "Commands:"
     ["eval" "--help"] "Usage: neorepl eval"
     ["eval" "-h"] "--timeout SECS"
-    [] "load "
+    ["-h"] "load "
     ["load" "--help"] "Usage: neorepl load"
     ["interrupt" "--help"] "Usage: neorepl interrupt"
     ["sessions" "--help"] "Usage: neorepl sessions"
     ["ports" "--help"] "Usage: neorepl ports"
-    ["check" "--help"] "Usage: neorepl check"))
+    ["check" "--help"] "Usage: neorepl check"
+    ["repl" "--help"] "Usage: neorepl [repl]"))

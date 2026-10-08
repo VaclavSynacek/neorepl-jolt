@@ -20,14 +20,15 @@
 
 (defn find-ports
   "The port files in dir and its parents, nearest first, as maps with the
-  :file and the :port in it. Stale files included."
+  :file, the :port in it and the project :dir it's for. Stale files
+  included."
   [dir]
   (for [^File d (take-while some? (iterate #(.getParentFile ^File %) (.getCanonicalFile (io/file dir))))
         name port-files
         :let [f (io/file d name)
               port (read-port f)]
         :when port]
-    {:file (str f) :port port}))
+    {:file (str f) :port port :dir (str d)}))
 
 (defn- try-connect
   "A client for the server on port, or nil when nothing answers there."
@@ -48,10 +49,12 @@
 
 (defn connect
   "Connects to the nearest server that answers, going by the port files in
-  dir and its parents."
+  dir and its parents. The client gets the :project-dir of the port file."
   [dir]
   (let [found (find-ports dir)]
-    (or (some (comp try-connect :port) found)
+    (or (some (fn [{:keys [port dir]}]
+                (some-> (try-connect port) (assoc :project-dir dir)))
+              found)
         (throw (no-server dir found)))))
 
 (defn probe

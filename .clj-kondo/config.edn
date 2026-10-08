@@ -1,1 +1,3 @@
-{:lint-as {neorepl.test-server/with-client clojure.core/with-open}}
+{:lint-as {neorepl.test-server/with-client clojure.core/with-open}
+ ;; .cljc files are for telling babashka from the JVM, there's no ClojureScript.
+ :cljc {:features [:clj]}}

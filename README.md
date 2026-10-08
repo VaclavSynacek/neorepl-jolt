@@ -5,9 +5,9 @@ spiritual successor to [REPLy](https://github.com/trptcolin/reply), with a
 proper line editor, the core of CIDER's tooling and a CLI that works just as
 well for scripts and coding agents as it does for people.
 
-It's early days: so far there are the command line tools, but no interactive
-REPL.
-[PLAN.md](PLAN.md) has the details on where this is going.
+It's early days: there's a REPL and a handful of command line tools, but none
+of CIDER's tooling yet. [PLAN.md](PLAN.md) has the details on where this is
+going.
 
 ## Usage
 
@@ -19,9 +19,15 @@ path:
 bbin install .
 ```
 
-`neorepl eval` evaluates code on the nREPL server whose `.nrepl-port` file is
-in the current directory or one of its parents (`neorepl ports` lists the
-ones it can see):
+`neorepl` connects to the nREPL server whose `.nrepl-port` file is in the
+current directory or one of its parents (`neorepl ports` lists the ones it
+can see) and starts a REPL. Enter evaluates the input once its forms are
+complete, Ctrl-C interrupts an evaluation and Ctrl-D exits. Code gets
+highlighted, values get pretty printed and the history is kept per project.
+Without a terminal, say in a pipe or Emacs' `M-x shell`, it works like
+`clojure.main`'s REPL instead.
+
+`neorepl eval` evaluates code on the same server:
 
 ```shell
 neorepl eval '(+ 1 2)'

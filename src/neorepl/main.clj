@@ -8,7 +8,8 @@
             [neorepl.json :as json]
             [neorepl.lexer :as lexer]
             [neorepl.nrepl :as nrepl]
-            [neorepl.sessions :as sessions])
+            [neorepl.sessions :as sessions]
+            [neorepl.xdg :as xdg])
   (:import (java.io File IOException)))
 
 (defn- usage-error [msg]
@@ -52,11 +53,14 @@
    {:long "--max-output" :arg "CHARS" :parse parse-count
     :doc "Cut each value, stdout and stderr at CHARS characters"}])
 
+(def ^:private help-option
+  {:short "-h" :long "--help"
+   :doc "Show this help"})
+
 (def ^:private common-options
   [{:long "--format" :arg "FORMAT" :parse #{"text" "edn" "json"} :default "text"
     :doc "text (default), edn or json"}
-   {:short "-h" :long "--help"
-    :doc "Show this help"}])
+   help-option])
 
 (def ^:private port-file-names
   (str "(" (str/join ", " discovery/port-files) ")"))
@@ -381,8 +385,61 @@ can't be read and 2 on usage errors."
       (emit format problems))
     (if (seq problems) 1 0)))
 
+(def ^:private repl-options
+  (concat connection-options
+          [(-> session-option
+               (dissoc :default)
+               (assoc :doc "Use the session called NAME instead of a fresh one"))
+           help-option]))
+
+(def ^:private repl-help
+  (help-text
+   "Usage: neorepl [repl] [options]"
+   "Starts a REPL on a running server, in a fresh session of its own unless
+--session names one, such as the one neorepl eval calls share. Enter
+evaluates the input once its forms are complete, Ctrl-C interrupts an
+evaluation and Ctrl-D exits.
+
+Without a terminal, as in a pipe or Emacs' M-x shell, it reads forms from
+standard input and prints prompts and results the way clojure.main's REPL
+does. Ctrl-C interrupts an evaluation there too, and ends the REPL when
+nothing's running."
+   repl-options
+   discovery-note
+   "Exit status: 0 when the REPL ends, 2 on usage errors and 3 when there's no
+server to talk to or the connection to it drops."
+   "Examples:
+  neorepl
+  neorepl -p 7888
+  neorepl --session default"))
+
+(defn- repl-command [{:keys [session] :as options} args {:keys [dir sessions-file] :as ctx}]
+  (reject-args args)
+  (with-client options dir
+    (fn [client]
+      (let [id (if session
+                 (sessions/ensure! sessions-file client session)
+                 (nrepl/clone-session client))
+            close #(when-not session
+                     ;; There's nothing to close when the connection is gone.
+                     (try (nrepl/close-session client id) (catch Exception _ nil)))
+            ;; A fresh session goes with the REPL, even when it gets killed.
+            hook (Thread. ^Runnable close)
+            runtime (Runtime/getRuntime)
+            ;; Loaded only when needed, along with JLine.
+            start (requiring-resolve 'neorepl.repl/start)]
+        (.addShutdownHook runtime hook)
+        (try
+          (start client id (select-keys ctx [:dir :history-dir :terminal]))
+          0
+          (finally
+            (.removeShutdownHook runtime hook)
+            (close)))))))
+
 (def ^:private commands
-  [{:name "eval" :summary "Evaluate code" :options eval-options :help eval-help :main eval-command}
+  [{:name "repl" :summary "Start a REPL (the default)" :options repl-options :help repl-help
+    :main repl-command}
+   {:name "eval" :summary "Evaluate code" :options eval-options :help eval-help :main eval-command}
    {:name "load" :summary "Load a file" :options load-options :help load-help :main load-command}
    {:name "interrupt" :summary "Interrupt an evaluation" :options interrupt-options :help interrupt-help
     :main interrupt-command}
@@ -394,9 +451,9 @@ can't be read and 2 on usage errors."
     :main check-command}])
 
 (def ^:private help
-  (str "Usage: neorepl COMMAND [options]
+  (str "Usage: neorepl [COMMAND] [options]
 
-A terminal client for nREPL servers.
+A terminal client for nREPL servers. Without a COMMAND it starts a REPL.
 
 Commands:
 " (cli/indented-columns (map (juxt :name :summary) commands)) "
@@ -412,13 +469,20 @@ Run neorepl COMMAND --help for its options."))
 
 (defn run
   "Runs the neorepl command line args and returns the exit status. ctx has
-  the :dir to look for port files in and the :sessions-file."
+  the :dir to look for port files in, the :sessions-file, the REPL's
+  :history-dir and the :terminal options for its line editor. Without those,
+  the REPL is the plain kind."
   [args ctx]
-  (let [[command & args] args
+  (let [[command & more] args
+        ;; Without a command, it's the REPL, options and all.
+        [command args] (if (or (nil? command)
+                               (and (str/starts-with? command "-") (not (#{"-h" "--help"} command))))
+                         ["repl" args]
+                         [command more])
         spec (some #(when (= command (:name %)) %) commands)]
     (try
       (cond
-        (contains? #{nil "help" "-h" "--help"} command) (do (println help) 0)
+        (contains? #{"help" "-h" "--help"} command) (do (println help) 0)
         spec (run-command spec args ctx)
         :else (throw (usage-error (str "Unknown command: " command))))
       (catch clojure.lang.ExceptionInfo e
@@ -430,6 +494,9 @@ Run neorepl COMMAND --help for its options."))
 
 (defn -main [& args]
   (let [status (run args {:dir (System/getProperty "user.dir")
-                          :sessions-file (sessions/default-file)})]
+                          :sessions-file (io/file (xdg/cache-home) "neorepl" "sessions.edn")
+                          :history-dir (io/file (xdg/state-home) "neorepl" "history")
+                          ;; See https://no-color.org.
+                          :terminal {:color? (str/blank? (System/getenv "NO_COLOR"))}})]
     (flush)
     (System/exit status)))
