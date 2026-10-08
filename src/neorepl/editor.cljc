@@ -88,14 +88,14 @@
                 (rawWordLength [_] (count word))]))))
 
 (defn- parser
-  "Tells JLine to keep reading when the forms aren't complete, unless it's
-  reading a raw line."
-  [raw?]
+  "Tells JLine to keep reading while (incomplete? line), unless it's reading
+  a raw line."
+  [raw? incomplete?]
   (reify Parser
     (parse [_ line cursor context]
       (when (and (= Parser$ParseContext/ACCEPT_LINE context)
                  (not @raw?)
-                 (lexer/incomplete? line))
+                 (incomplete? line))
         (throw (EOFError. -1 -1 "Incomplete form")))
       (parsed-line line cursor))))
 
@@ -184,6 +184,8 @@
 
     :history-file  where to keep the history
     :color?        false for no colors
+    :incomplete?   (incomplete? text) for whether Enter goes on to another
+                   line (lexer/incomplete? by default)
     :complete      (complete prefix) for the completions of prefix, as
                    features/complete has them
     :eldoc         (eldoc text cursor) for the text to show after the
@@ -193,7 +195,9 @@
     :doc           (doc text cursor) for the documentation C-x C-d shows
     :input, :output, :width and :type
                    a terminal on these streams instead, for tests"
-  [{:keys [history-file color? complete eldoc eldoc? doc input] :or {color? true eldoc? true} :as opts}]
+  [{:keys [history-file color? incomplete? complete eldoc eldoc? doc input]
+    :or {color? true incomplete? lexer/incomplete? eldoc? true}
+    :as opts}]
   (when (or input (maybe-terminal?))
     (let [terminal (terminal opts)]
       (if (str/starts-with? (.getType terminal) "dumb")
@@ -204,7 +208,7 @@
               builder (-> (LineReaderBuilder/builder)
                           (.terminal terminal)
                           (.appName "neorepl")
-                          (.parser (parser raw?))
+                          (.parser (parser raw? incomplete?))
                           (.highlighter (highlighter styles raw? (when eldoc? (some-> eldoc safely))))
                           (.variable LineReader/SECONDARY_PROMPT_PATTERN "%P #_=> ")
                           ;; ! is just a character in Clojure code.

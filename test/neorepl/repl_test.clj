@@ -213,3 +213,18 @@
         (type "\u0018\u0004")
         (is (screen #"clojure\.core/when\n\(\[test & body\]\)\nMacro\n  Evaluates test"))
         (type "\u0003")))))
+
+(deftest commands-test
+  (call-with-repl {}
+    (fn [type screen]
+      (type ",doc when\r")
+      (is (screen #"clojure\.core/when\n\(\[test & body\]\)\nMacro\n"))
+      (type ",apropos ^mapcat$\r")
+      (is (screen #"clojure\.core/mapcat\nuser=> $"))
+      (type ",macroexpand (when x\r")
+      (is (screen #"#_=> $"))
+      (type "y)\r")
+      (is (screen #"\(if x \(do y\)\)\nuser=> $"))
+      (testing "and code pasted after a command runs after it"
+        (type "\u001b[200~,doc inc\n(+ 40 2)\u001b[201~\r")
+        (is (screen #"clojure\.core/inc\n(?s).*\n42\nuser=> $"))))))

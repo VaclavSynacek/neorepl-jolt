@@ -558,7 +558,8 @@ usage errors and 3 when there's no server to talk to."
    "Starts a REPL on a running server, in a fresh session of its own unless
 --session names one, such as the one neorepl eval calls share. Enter
 evaluates the input once its forms are complete, Ctrl-C interrupts an
-evaluation and Ctrl-D exits.
+evaluation and Ctrl-D exits. Commands start with a comma, like ,doc map,
+and ,help lists them.
 
 Without a terminal, as in a pipe or Emacs' M-x shell, it reads forms from
 standard input and prints prompts and results the way clojure.main's REPL

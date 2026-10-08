@@ -331,6 +331,24 @@
     (run "-s" "pst-short" "(throw (ex-info \"boom\" {:xs (range) :deep {:er 1}}))")
     (is (str/starts-with? (:out (run-command "pst" "-s" "pst-short")) "clojure.lang.ExceptionInfo: boom\n"))))
 
+(deftest repl-commands-test
+  (let [repl #(:out (run-in *dir* % "repl" "-p" (str *port*)))]
+    (testing "commands"
+      (is (str/starts-with? (repl ",doc map\n") "user=> clojure.core/map\n([f] [f coll]"))
+      (is (str/starts-with? (repl ",source when\n") "user=> (defmacro when\n"))
+      (is (= "user=> (if x (do y))\nuser=> \n" (repl ",macroexpand (when x\n  y)\n")))
+      (is (str/includes? (repl "(/ 1 0)\n,pst\n") "user=> java.lang.ArithmeticException: Divide by zero\n")))
+    (testing "a command's trouble doesn't end the REPL"
+      (is (str/ends-with? (repl "(set! *print-length* 2)\n(throw (ex-info \"boom\" {:xs (range 10)}))\n,pst\n(+ 1 2)\n")
+                          "user=> 3\nuser=> \n")))
+    (testing "an argument that isn't code ends with its line"
+      (is (= "user=> clojure.core/mapcat\nuser=> 3\nuser=> \n" (repl ",apropos ^mapcat$\n(+ 1 2)\n"))))
+    (testing "help, mistakes and quitting"
+      (is (str/includes? (repl ",help\n") ",doc SYM"))
+      (is (= "user=> Usage: ,doc SYM\nuser=> \n" (repl ",doc\n")))
+      (is (= "user=> No command called ,nope, ,help lists them\nuser=> \n" (repl ",nope\n")))
+      (is (= "user=> \n" (repl ",quit\n(+ 1 2)\n"))))))
+
 (deftest discovery-test
   (call-with-temp-dir
    (fn [dir]
