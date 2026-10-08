@@ -4,6 +4,8 @@
         org.jline/jline {:mvn/version "4.4.7"}}
  :aliases
  {:test {:extra-paths ["test"]
+         ;; JLine loads native code, which Java 22+ warns about without this.
+         :jvm-opts ["--enable-native-access=ALL-UNNAMED"]
          :main-opts ["-m" "neorepl.test-runner"]}
   :1.10 {:override-deps {org.clojure/clojure {:mvn/version "1.10.3"}}}
   :1.11 {:override-deps {org.clojure/clojure {:mvn/version "1.11.4"}}}
