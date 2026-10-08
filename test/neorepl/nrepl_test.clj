@@ -5,7 +5,8 @@
             [nrepl.middleware :as middleware]
             [nrepl.server :as server]
             [nrepl.transport :as transport])
-  (:import (java.net ServerSocket)))
+  (:import (java.lang.ref WeakReference)
+           (java.net ServerSocket)))
 
 (defn- wrap-ping
   "A test op whose name has a namespace, like cider-nrepl's cider/* ops."
@@ -165,6 +166,20 @@
               (is (= :idle (nrepl/interrupt client session nil))))
             (testing "in a session that isn't there"
               (is (= :unknown-session (nrepl/interrupt client "no-such-session" nil))))))))))
+
+(deftest memory-test
+  (testing "responses can be collected once they're handled"
+    (with-client [client {:port *port*}]
+      (let [response (atom nil)]
+        (nrepl/request client {:op "eval" :code "(apply str (repeat 100 \"x\"))"})
+        (nrepl/send! client {:op "eval" :code "1"} #(when (:value %) (reset! response (WeakReference. %))))
+        (nrepl/request client {:op "eval" :code "2"})
+        (is (loop [tries 50]
+              (System/gc)
+              (cond
+                (nil? (.get ^WeakReference @response)) true
+                (zero? tries) false
+                :else (do (Thread/sleep 20) (recur (dec tries))))))))))
 
 (deftest handler-error-test
   (let [error (promise)]

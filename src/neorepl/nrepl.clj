@@ -48,11 +48,15 @@
                ;; A broken handler mustn't take the connection down with it.
                (try (handler response) (catch Throwable e (on-error e))))]
     (try
-      (doseq [{:keys [id] :as response} (nrepl/response-seq transport)]
-        (if-let [handler (get @pending id)]
-          (do (when (done? response) (swap! pending dissoc id))
-              (call handler response))
-          (call on-unclaimed response)))
+      ;; Not over nrepl/response-seq: on babashka, walking the lazy seq keeps
+      ;; its head, and with it every response the connection ever got.
+      (loop []
+        (when-let [{:keys [id] :as response} (transport/recv transport Long/MAX_VALUE)]
+          (if-let [handler (get @pending id)]
+            (do (when (done? response) (swap! pending dissoc id))
+                (call handler response))
+            (call on-unclaimed response))
+          (recur)))
       ;; The socket went away, the server sent garbage or close interrupted us.
       (catch Throwable _))
     (let [[waiting] (swap-vals! pending (constantly nil))]
