@@ -40,15 +40,20 @@
     (:err response) (update :err cut (- max-output err-size))))
 
 (defn- result
-  "What an evaluation came to, given its accumulated responses and, when it
-  ran out of time, the timeout and whether the interrupt worked."
-  [{:keys [values out err ns ex root-ex statuses truncated?]} {:keys [timeout interrupted?] :as timed-out}]
-  (let [status (if timed-out "timeout" (or (some statuses failure-statuses) "ok"))
+  "What an evaluation came to, given its accumulated responses and, when
+  neorepl stopped waiting for it, why: it ran out of time, the :timeout, with
+  whether the interrupt worked, or it got :stopped."
+  [{:keys [values out err ns ex root-ex statuses truncated?]} {:keys [timeout interrupted? stopped]}]
+  (let [status (cond
+                 timeout "timeout"
+                 stopped "stopped"
+                 :else (or (some statuses failure-statuses) "ok"))
         message (case status
                   "timeout" (str "Timed out after " timeout "s"
                                  (if interrupted?
                                    " and interrupted the evaluation"
                                    ", and interrupting the evaluation failed"))
+                  "stopped" "Stopped waiting for the evaluation, which may still be running"
                   "interrupted" "The evaluation was interrupted"
                   "disconnected" "Lost the connection to the nREPL server"
                   "error" (str "The server reported " (str/join ", " (sort (disj statuses "done" "error"))))
@@ -65,23 +70,34 @@
                (fn [_])))
 
 (defn- interrupt!
-  "Interrupts the evaluation with message id, giving the server a second to
-  confirm. Returns whether it did, or found it done already."
-  [client session id]
-  (try
-    (contains? #{:interrupted :idle} (nrepl/interrupt client session id {:timeout-ms 1000}))
-    (catch Exception _ false)))
+  "Interrupts the evaluation with message id, whose responses go to the
+  queue responses, giving the server a second to confirm. Returns whether
+  it did, or found it done already. A server can find the session idle
+  while the evaluation runs elsewhere, as shadow-cljs's ClojureScript ones
+  do, but one that's done has sent done before saying so."
+  [client session id responses]
+  (case (try
+          (nrepl/interrupt client session id {:timeout-ms 1000})
+          (catch Exception _ :error))
+    :interrupted true
+    :idle (boolean (some nrepl/done? responses))
+    false))
 
 (defn evaluate
   "Sends msg, an eval or load-file, and returns its result: a map with the
-  :status (ok, eval-error, interrupted, disconnected, error or timeout), the
-  printed :values, the :out and :err output and the session's :ns after it.
-  Failed evaluations add the :ex and :root-ex classes, and a :message unless
-  :err already tells.
+  :status (ok, eval-error, interrupted, disconnected, error, timeout or
+  stopped), the printed :values, the :out and :err output and the session's
+  :ns after it. Failed evaluations add the :ex and :root-ex classes, and a
+  :message unless :err already tells.
 
   Interrupts the evaluation when neorepl gets killed. Options:
 
-    :on-send      called with the message id once the message is out
+    :on-send      called with the message id once the message is out, and a
+                  function that interrupts the evaluation, for Ctrl-C: it
+                  asks the server to, or, once the server's said it can't,
+                  stops waiting for the evaluation
+    :on-interrupt-failed
+                  called when the server can't interrupt the evaluation
     :on-response  called with each response as it arrives
     :read-line    called when the code reads *in*, for the next line, nil
                   at end of input or :interrupted to leave the read
@@ -91,42 +107,71 @@
     :max-output   cuts each value at that many characters, and stdout and
                   stderr too, marking the result :truncated
     :collect?     false to leave :values, :out and :err empty, for callers
-                  that print the responses as they come (true by default)"
-  [client {:keys [session] :as msg} {:keys [on-send on-response read-line timeout max-output collect?]
-                                     :or {on-send (fn [_])
+                  that print the responses as they come (true by default)
+
+  Responses that come after it stops waiting, on a timeout or when told to,
+  go where the client's unclaimed responses go."
+  [client {:keys [session] :as msg} {:keys [on-send on-interrupt-failed on-response read-line timeout max-output collect?]
+                                     :or {on-send (fn [_ _])
+                                          on-interrupt-failed (fn [])
                                           on-response (fn [_])
                                           read-line clojure.core/read-line
                                           collect? true}}]
   (let [deadline (when timeout (+ (System/currentTimeMillis) (long (* 1000 timeout))))
         responses (LinkedBlockingQueue.)
+        given-up (promise)
         ;; The server cuts values itself, sparing us an endless (range), but
         ;; not every server has the print middleware.
         id (nrepl/send! client (cond-> msg max-output (assoc :nrepl.middleware.print/quota max-output))
-                        #(.put responses %))
+                        #(if (realized? given-up)
+                           (nrepl/unclaimed client %)
+                           (.put responses %)))
+        interrupt-failed (promise)
+        interrupt #(if (realized? interrupt-failed)
+                     (.put responses ::stop)
+                     ;; Not on the thread that delivers signals and keystrokes.
+                     (future
+                       (when-not (interrupt! client session id responses)
+                         (.put responses ::interrupt-failed))))
+        give-up #(do (deliver given-up true)
+                     (result %1 %2))
         ;; Otherwise the evaluation keeps the session busy for later calls.
-        hook (Thread. ^Runnable #(interrupt! client session id))
+        hook (Thread. ^Runnable #(interrupt! client session id responses))
         runtime (Runtime/getRuntime)]
-    (on-send id)
+    (on-send id interrupt)
     (.addShutdownHook runtime hook)
     (try
       (loop [acc {:values [] :out [] :err [] :out-size 0 :err-size 0 :statuses #{}}]
-        (if-let [response (if deadline
-                            (.poll responses (- deadline (System/currentTimeMillis)) TimeUnit/MILLISECONDS)
-                            (.take responses))]
-          (let [fitted (cond->> response max-output (fit acc max-output))
-                truncated? (and max-output
-                                (or (not= fitted response)
-                                    (nrepl/status? response "nrepl.middleware.print/truncated")))
-                acc (cond-> (add-response acc fitted collect?) truncated? (assoc :truncated? true))]
-            (on-response fitted)
-            (when (nrepl/status? response "need-input")
-              (let [line (read-line)]
-                (when-not (= :interrupted line)
-                  (send-stdin client session line))))
-            (if (nrepl/done? response)
-              (result acc nil)
-              (recur acc)))
-          (result acc {:timeout timeout :interrupted? (interrupt! client session id)})))
+        (let [response (if deadline
+                         (.poll responses (- deadline (System/currentTimeMillis)) TimeUnit/MILLISECONDS)
+                         (.take responses))]
+          (cond
+            (nil? response)
+            (give-up acc {:timeout timeout :interrupted? (interrupt! client session id responses)})
+
+            (= ::stop response)
+            (give-up acc {:stopped true})
+
+            (= ::interrupt-failed response)
+            (do (when-not (realized? interrupt-failed)
+                  (deliver interrupt-failed true)
+                  (on-interrupt-failed))
+                (recur acc))
+
+            :else
+            (let [fitted (cond->> response max-output (fit acc max-output))
+                  truncated? (and max-output
+                                  (or (not= fitted response)
+                                      (nrepl/status? response "nrepl.middleware.print/truncated")))
+                  acc (cond-> (add-response acc fitted collect?) truncated? (assoc :truncated? true))]
+              (on-response fitted)
+              (when (nrepl/status? response "need-input")
+                (let [line (read-line)]
+                  (when-not (= :interrupted line)
+                    (send-stdin client session line))))
+              (if (nrepl/done? response)
+                (result acc nil)
+                (recur acc))))))
       (finally
         (.removeShutdownHook runtime hook)))))
 

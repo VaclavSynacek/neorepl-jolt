@@ -30,21 +30,21 @@
                                    (handle [_ _] (f)))))
 
 (defn- interruptions
-  "What Ctrl-C needs in a REPL on session: the id of the evaluation
-  :running, the id of the one :interrupted last, the :command-thread while a
-  command runs, and an :interrupt function that interrupts whichever's going
-  on and returns something truthy, or nil when nothing is."
-  [client session]
+  "What Ctrl-C needs in a REPL: the evaluation :running, as its :id and the
+  function that interrupts it, the id of the one :interrupted last, the
+  :command-thread while a command runs, and an :interrupt function that
+  interrupts whichever's going on and returns something truthy, or nil when
+  nothing is."
+  []
   (let [running (atom nil)
         interrupted (atom nil)
         command-thread (atom nil)]
     {:running running
      :interrupted interrupted
      :command-thread command-thread
-     :interrupt #(if-let [id @running]
+     :interrupt #(if-let [{:keys [id interrupt]} @running]
                    (do (reset! interrupted id)
-                       ;; Not on the thread that delivers signals and keystrokes.
-                       (future (nrepl/interrupt client session id))
+                       (interrupt)
                        id)
                    ;; A command waiting on the server stops waiting.
                    (when-let [^Thread thread @command-thread]
@@ -213,11 +213,19 @@
                 {:keys [status message] :as result}
                 (evaluation/evaluate client
                                      (eval-msg session code (width))
-                                     (cond-> {:on-send #(reset! running %)
+                                     (cond-> {:on-send #(reset! running {:id %1 :interrupt %2})
+                                              ;; It's not dying after all, so what it says
+                                              ;; from then on is worth seeing.
+                                              :on-interrupt-failed
+                                              #(do (reset! interrupted nil)
+                                                   (print-message "The server can't interrupt the evaluation, Ctrl-C again stops waiting for it"))
                                               :on-response print-response
                                               :collect? false}
                                        read-line (assoc :read-line read-line)))]
             (reset! running nil)
+            ;; The Ctrl-C that stopped the wait marked it interrupted again.
+            (when (= "stopped" status)
+              (reset! interrupted nil))
             ;; There's no point in reading more input then.
             (when (= "disconnected" status)
               (throw (ex-info message {:type ::nrepl/disconnected})))
@@ -250,7 +258,7 @@
   pipes, Emacs' M-x shell and the like. Reads from *in* and prints prompts and
   results to *out*, the way clojure.main's REPL does."
   [client session editor-command]
-  (let [{:keys [interrupt] :as interruptions} (interruptions client session)
+  (let [{:keys [interrupt] :as interruptions} (interruptions)
         ;; With nothing to interrupt, Ctrl-C is for the REPL.
         previous (on-sigint #(when-not (interrupt) (System/exit 130)))]
     (try
@@ -333,7 +341,7 @@
   "The REPL with a line editor. in-ns gets called with the namespace the
   REPL's in at each prompt."
   [client session editor in-ns editor-command]
-  (let [{:keys [interrupt] :as interruptions} (interruptions client session)]
+  (let [{:keys [interrupt] :as interruptions} (interruptions)]
     (editor/on-interrupt editor interrupt)
     (editor/print-text editor :notice (banner client))
     (run-loop client session interruptions

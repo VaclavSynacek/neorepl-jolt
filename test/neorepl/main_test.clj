@@ -128,6 +128,10 @@
   (testing "and the session is free again"
     (is (= {:status 0 :out "1\n" :err ""}
            (run "-s" "slow" "--timeout" "5" "1"))))
+  (testing "an evaluation the server can't interrupt isn't said to be interrupted"
+    (let [{:keys [status err]} (run "-s" "stuck" "--timeout" "0.2" "(stuck)")]
+      (is (= 124 status))
+      (is (str/includes? err "Timed out after 0.2s, and interrupting the evaluation failed"))))
   (testing "timeouts show up in structured output"
     (let [{:keys [status out]} (run "-s" "slow" "--timeout" "0.2" "--format" "edn" "(Thread/sleep 10000)")]
       (is (= 124 status))

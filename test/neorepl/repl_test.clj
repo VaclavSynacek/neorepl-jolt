@@ -157,6 +157,26 @@
         (is (screen #"The evaluation was interrupted\nuser=> $"))
         (type "(+ 3 3)\r")
         (is (screen #"(?m)^6\nuser=> $")))))
+  (testing "Ctrl-C again stops waiting for an evaluation the server can't interrupt"
+    (call-with-repl {}
+      (fn [type screen]
+        (type "(stuck)\r")
+        (screen #"\(stuck\)\n$")
+        (Thread/sleep 100)
+        (type "\u0003")
+        (is (screen #"The server can't interrupt the evaluation, Ctrl-C again stops waiting for it\n$"))
+        (type "\u0003")
+        (is (screen #"Stopped waiting for the evaluation, which may still be running\nuser=> $"))
+        (type "(+ 3 3)\r")
+        (is (screen #"(?m)^6\nuser=> $")))))
+  (testing "and shows what it says after all, when it's only slow"
+    (call-with-repl {}
+      (fn [type screen]
+        (type "(slow)\r")
+        (screen #"\(slow\)\n$")
+        (Thread/sleep 100)
+        (type "\u0003")
+        (is (screen #"Ctrl-C again stops waiting for it\n:slow\nuser=> $")))))
   (testing ":repl/quit"
     (call-with-repl {}
       (fn [type _]

@@ -3,7 +3,9 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [neorepl.nrepl :as nrepl]
-            [nrepl.server :as server])
+            [nrepl.middleware :as middleware]
+            [nrepl.server :as server]
+            [nrepl.transport :as transport])
   (:import (java.io File)
            (java.net ServerSocket)
            (java.nio.file Files)
@@ -11,12 +13,31 @@
 
 (def ^:dynamic *port* nil)
 
+(defn wrap-stuck
+  "Never answers an evaluation of (stuck), the way shadow-cljs doesn't one
+  that keeps the JavaScript runtime busy, and answers one of (slow) after a
+  second. nREPL can't interrupt either, since they don't run in the
+  session."
+  [handler]
+  (fn [{:keys [op code] :as msg}]
+    (cond
+      (not= "eval" op) (handler msg)
+      (= "(stuck)" code) nil
+      (= "(slow)" code) (future
+                          (Thread/sleep 1000)
+                          (transport/respond-to msg :ns "user" :value ":slow")
+                          (transport/respond-to msg :status "done"))
+      :else (handler msg))))
+
+(middleware/set-descriptor! #'wrap-stuck {:expects #{"eval"}})
+
 (defn fixture
   "A :once fixture that runs the tests with an nREPL server listening on
-  *port*. opts go to nrepl.server/start-server."
+  *port*, with wrap-stuck unless opts, which go to
+  nrepl.server/start-server, give it a :handler."
   [& opts]
   (fn [f]
-    (let [srv (apply server/start-server :port 0 opts)]
+    (let [srv (apply server/start-server :port 0 :handler (server/default-handler #'wrap-stuck) opts)]
       (try
         (binding [*port* (:port srv)]
           (f))
