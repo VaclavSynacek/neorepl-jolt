@@ -2,6 +2,7 @@
   "An nREPL server and temporary directories for the tests that need them."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
+            [neorepl.nrepl :as nrepl]
             [nrepl.server :as server])
   (:import (java.io File)
            (java.net ServerSocket)
@@ -21,6 +22,12 @@
           (f))
         (finally
           (server/stop-server srv))))))
+
+(defmacro with-client
+  "Evaluates body with sym bound to a client connected with opts."
+  [[sym opts] & body]
+  `(let [~sym (nrepl/connect ~opts)]
+     (try ~@body (finally (nrepl/close ~sym)))))
 
 (defn windows? []
   (str/starts-with? (System/getProperty "os.name") "Windows"))

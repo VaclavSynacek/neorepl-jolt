@@ -166,10 +166,22 @@
   nil)
 
 (defn interrupt
-  "Asks the server to interrupt the evaluation with message id in session.
-  Returns the responses to the interrupt request itself; the interrupted
+  "Asks the server to interrupt the evaluation with message id in session, or
+  whichever is running there when id is nil. Returns how that went:
+  :interrupted, :idle when nothing was running, :unknown-session, :mismatch
+  when an evaluation other than id was running, or :error. The interrupted
   evaluation reports the status interrupted to its own handler. opts are the
   same as for `request`."
   ([client session id] (interrupt client session id {}))
   ([client session id opts]
-   (request client {:op "interrupt" :session session :interrupt-id id} opts)))
+   (let [statuses (into #{} (mapcat :status)
+                        (request client
+                                 (cond-> {:op "interrupt" :session session}
+                                   id (assoc :interrupt-id id))
+                                 opts))]
+     (cond
+       (statuses "session-idle") :idle
+       (statuses "unknown-session") :unknown-session
+       (statuses "interrupt-id-mismatch") :mismatch
+       (statuses "error") :error
+       :else :interrupted))))

@@ -1,1 +1,1 @@
-{:lint-as {neorepl.nrepl-test/with-client clojure.core/with-open}}
+{:lint-as {neorepl.test-server/with-client clojure.core/with-open}}

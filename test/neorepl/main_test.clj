@@ -6,7 +6,7 @@
             [neorepl.main :as main]
             [neorepl.nrepl :as nrepl]
             [neorepl.sessions :as sessions]
-            [neorepl.test-server :as test-server :refer [*port* call-with-temp-dir spit-file]])
+            [neorepl.test-server :as test-server :refer [*port* call-with-temp-dir spit-file with-client]])
   (:import (java.io StringWriter)
            (java.util.concurrent TimeUnit)))
 
@@ -89,14 +89,11 @@
     (is (= "42\n" (:out (run "-s" "star-test" "*1")))))
   (testing "a session the server lost gets replaced"
     (run "-s" "lost" "1")
-    (let [client (nrepl/connect {:port *port*})]
-      (try
-        (let [lost (sessions/ensure! (sessions-file) client "lost")]
-          (nrepl/close-session client lost)
-          (is (= {:status 0 :out "2\n" :err ""} (run "-s" "lost" "2")))
-          (is (not= lost (sessions/ensure! (sessions-file) client "lost"))))
-        (finally
-          (nrepl/close client))))))
+    (with-client [client {:port *port*}]
+      (let [lost (sessions/ensure! (sessions-file) client "lost")]
+        (nrepl/close-session client lost)
+        (is (= {:status 0 :out "2\n" :err ""} (run "-s" "lost" "2")))
+        (is (not= lost (sessions/ensure! (sessions-file) client "lost")))))))
 
 (deftest timeout-test
   (testing "an evaluation running too long gets interrupted"
@@ -133,8 +130,30 @@
       (is (= {:status 0 :out "(0 \n" :err ""} (run "-s" "quota" "(range 10)"))))))
 
 (def started
-  "Delivered by code the killed neorepl evaluates on the test server."
+  "Delivered by code that neorepl evaluates on the test server, to say it's
+  running."
   (atom nil))
+
+(deftest interrupt-test
+  (testing "interrupting an evaluation, here one whose client went away"
+    (reset! started (promise))
+    (with-client [client {:port *port*}]
+      (nrepl/send! client {:op "eval"
+                           :session (sessions/ensure! (sessions-file) client "stuck")
+                           :code "(deliver @neorepl.main-test/started true) (Thread/sleep 20000)"}
+                   (fn [_]))
+      (is (deref @started 10000 false)))
+    (is (= {:status 0 :out "" :err ""} (run-command "interrupt" "-s" "stuck")))
+    (testing "frees the session"
+      (is (= {:status 0 :out "1\n" :err ""} (run "-s" "stuck" "--timeout" "5" "1")))))
+  (testing "nothing to interrupt"
+    (is (= {:status 1 :out "" :err "neorepl: Nothing is running in session stuck\n"}
+           (run-command "interrupt" "-s" "stuck")))
+    (is (= {:status "idle" :message "Nothing is running in session stuck"}
+           (edn/read-string (:out (run-command "interrupt" "-s" "stuck" "--format" "edn"))))))
+  (testing "no such session"
+    (is (= {:status 1 :out "" :err "neorepl: No session called nope\n"}
+           (run-command "interrupt" "-s" "nope")))))
 
 (defn- start-neorepl
   "Runs neorepl with args in a process of its own, on the runtime running the
@@ -232,6 +251,7 @@
       ["load" "-p" "1" "a.clj" "b.clj"] "Load one file at a time"
       ["load" "-p" "1" "/does/not/exist.clj"] "No such file"
       ["load" "-f" "x.clj"] "Unknown option: -f"
+      ["interrupt" "-p" "1" "now"] "Unexpected argument: now"
       ["evil"] "Unknown command: evil"))
   (testing "usage errors point at the right help"
     (is (str/includes? (:err (run-in *dir* "" "load" "--bogus")) "Run neorepl load --help"))
@@ -249,4 +269,5 @@
     ["eval" "--help"] "Usage: neorepl eval"
     ["eval" "-h"] "--timeout SECS"
     [] "load "
-    ["load" "--help"] "Usage: neorepl load"))
+    ["load" "--help"] "Usage: neorepl load"
+    ["interrupt" "--help"] "Usage: neorepl interrupt"))

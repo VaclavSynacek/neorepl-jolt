@@ -49,16 +49,27 @@
   (or (not (contains? (:ops client) "ls-sessions"))
       (contains? (set (some :sessions (nrepl/request client {:op "ls-sessions"}))) session)))
 
+(defn- cached [file client name]
+  (get-in (read-cache file) [(:address client) name]))
+
 (defn ensure!
   "The id of the session called name on client's server, as cached in file.
   Clones and caches a new one when there's none yet or the server doesn't
   know the cached one anymore, typically because it restarted."
   [file client name]
-  (let [k [(:address client) name]
-        cached (get-in (read-cache file) k)]
-    (if (and cached (live? client cached))
-      cached
+  (let [session (cached file client name)]
+    (if (and session (live? client session))
+      session
       (let [session (nrepl/clone-session client)]
         ;; Read again, to keep what other processes wrote in the meantime.
-        (write-cache! file (assoc-in (read-cache file) k session))
+        (write-cache! file (assoc-in (read-cache file) [(:address client) name] session))
         session))))
+
+(defn interrupt
+  "Interrupts whatever runs in the session called name, returning how that
+  went as nrepl/interrupt does."
+  [file client name]
+  ;; No need to check the session is alive: the server says so if it isn't.
+  (if-let [session (cached file client name)]
+    (nrepl/interrupt client session nil)
+    :unknown-session))

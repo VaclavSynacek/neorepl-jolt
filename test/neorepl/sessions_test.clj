@@ -43,8 +43,12 @@
            (let [other (sessions/ensure! file client "other")]
              (is (not= session other))
              (is (= other (sessions/ensure! file client "other")))))
+         (testing "interrupting by name"
+           (is (= :idle (sessions/interrupt file client "agent")))
+           (is (= :unknown-session (sessions/interrupt file client "nope"))))
          (testing "a session the server lost gets replaced"
            (nrepl/close-session client session)
+           (is (= :unknown-session (sessions/interrupt file client "agent")))
            (testing "unless the server can't tell us"
              (is (= session (sessions/ensure! file (update client :ops disj "ls-sessions") "agent"))))
            (let [fresh (sessions/ensure! file client "agent")]

@@ -40,9 +40,12 @@
    {:long "--url" :arg "URL" :parse nrepl/parse-url
     :doc "Connect to nrepl://HOST:PORT or nrepl+unix:PATH"}])
 
+(def ^:private session-option
+  {:short "-s" :long "--session" :arg "NAME" :parse not-empty :default "default"
+   :doc "Use the session called NAME (default: default)"})
+
 (def ^:private evaluation-options
-  [{:short "-s" :long "--session" :arg "NAME" :parse not-empty :default "default"
-    :doc "Use the session called NAME (default: default)"}
+  [session-option
    {:long "--timeout" :arg "SECS" :parse parse-seconds
     :doc "Interrupt the evaluation after SECS seconds"}
    {:long "--max-output" :arg "CHARS" :parse parse-count
@@ -152,10 +155,10 @@ and the like carry over from one call to the next.")
 
 (defn- interrupt!
   "Interrupts the evaluation with message id, giving the server a second to
-  confirm. Returns whether it did."
+  confirm. Returns whether it did, or found it done already."
   [client session id]
   (try
-    (not-any? #(nrepl/status? % "error") (nrepl/interrupt client session id {:timeout-ms 1000}))
+    (contains? #{:interrupted :idle} (nrepl/interrupt client session id {:timeout-ms 1000}))
     (catch Exception _ false)))
 
 (defn- evaluate
@@ -221,6 +224,21 @@ and the like carry over from one call to the next.")
     (binding [*out* *err*]
       (newline))))
 
+(defn- emit
+  "Prints data in format, edn or json."
+  [format data]
+  (case format
+    "edn" (prn data)
+    "json" (println (json/write-str data))))
+
+(defn- report
+  "Prints result, a map with a :status and maybe a :message, in format. Text
+  is only the message, on stderr."
+  [format {:keys [message] :as result}]
+  (if (= "text" format)
+    (some-> message warn)
+    (emit format result)))
+
 (defn- report-evaluation
   "Evaluates msg on the server options point at, in the session they name,
   prints the result in the format they ask for and returns the exit status."
@@ -233,12 +251,11 @@ and the like carry over from one call to the next.")
                       {:timeout timeout
                        :max-output max-output
                        :on-response (if (= "text" format) (text-printer) (fn [_]))})]
-        (case format
-          "text" (do (when (or truncated message) (end-err-line err))
-                     (when truncated (warn (str "Cut the output at " max-output " characters")))
-                     (some-> message warn))
-          "edn" (prn result)
-          "json" (println (json/write-str result)))
+        (if (= "text" format)
+          (do (when (or truncated message) (end-err-line err))
+              (when truncated (warn (str "Cut the output at " max-output " characters")))
+              (some-> message warn))
+          (emit format result))
         (case status "ok" 0 "timeout" 124 1)))))
 
 (def ^:private eval-options
@@ -311,9 +328,44 @@ an ns form switches the session to that namespace."
                        options
                        ctx)))
 
+(def ^:private interrupt-options
+  (concat connection-options [session-option] common-options))
+
+(def ^:private interrupt-help
+  (help-text
+   "Usage: neorepl interrupt [options]"
+   "Interrupts the evaluation running in a session, freeing it up for the next
+one. It's meant for evaluations nobody is waiting for anymore, like one a
+neorepl eval left behind when it got killed. A neorepl eval that's still
+waiting won't find out that its evaluation ended, so stop that one with
+Ctrl-C instead."
+   interrupt-options
+   discovery-note
+   "Exit status: 0 when it interrupted an evaluation, 1 when there was none to
+interrupt, 2 on usage errors and 3 when there's no server to talk to."
+   "Examples:
+  neorepl interrupt
+  neorepl interrupt -s agent"))
+
+(defn- interrupt-command [{:keys [session format] :as options} args {:keys [dir sessions-file]}]
+  (when (seq args)
+    (throw (usage-error (str "Unexpected argument: " (first args)))))
+  (with-client options dir
+    (fn [client]
+      (let [{:keys [status] :as result}
+            (case (sessions/interrupt sessions-file client session)
+              :interrupted {:status "interrupted"}
+              :idle {:status "idle" :message (str "Nothing is running in session " session)}
+              :unknown-session {:status "no-session" :message (str "No session called " session)}
+              {:status "error" :message "The server couldn't interrupt the evaluation"})]
+        (report format result)
+        (if (= "interrupted" status) 0 1)))))
+
 (def ^:private commands
   [{:name "eval" :summary "Evaluate code" :options eval-options :help eval-help :main eval-command}
-   {:name "load" :summary "Load a file" :options load-options :help load-help :main load-command}])
+   {:name "load" :summary "Load a file" :options load-options :help load-help :main load-command}
+   {:name "interrupt" :summary "Interrupt an evaluation" :options interrupt-options :help interrupt-help
+    :main interrupt-command}])
 
 (def ^:private help
   (let [width (apply max (map (comp count :name) commands))]

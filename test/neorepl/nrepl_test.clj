@@ -1,7 +1,7 @@
 (ns neorepl.nrepl-test
   (:require [clojure.test :refer [are deftest is testing use-fixtures]]
             [neorepl.nrepl :as nrepl]
-            [neorepl.test-server :as test-server :refer [*port*]]
+            [neorepl.test-server :as test-server :refer [*port* with-client]]
             [nrepl.middleware :as middleware]
             [nrepl.server :as server]
             [nrepl.transport :as transport])
@@ -21,12 +21,6 @@
   (apply server/start-server :handler (server/default-handler #'wrap-ping) opts))
 
 (use-fixtures :once (test-server/fixture :handler (server/default-handler #'wrap-ping)))
-
-(defmacro ^:private with-client
-  "Evaluates body with sym bound to a client connected with opts."
-  [[sym opts] & body]
-  `(let [~sym (nrepl/connect ~opts)]
-     (try ~@body (finally (nrepl/close ~sym)))))
 
 (defn- eval-in [client session code]
   (nrepl/request client {:op "eval" :code code :session session}))
@@ -151,9 +145,25 @@
                                   (swap! statuses into (:status response))
                                   (when (nrepl/done? response) (deliver done true))))]
             (is (deref started 5000 false))
-            (nrepl/interrupt client session id)
+            (is (= :mismatch (nrepl/interrupt client session "some-other-id")))
+            (is (= :interrupted (nrepl/interrupt client session id)))
             (is (deref done 5000 false))
-            (is (contains? @statuses "interrupted"))))))))
+            (is (contains? @statuses "interrupted"))))
+        (testing "interrupting whatever's running"
+          (let [started (promise)
+                done (promise)]
+            (nrepl/send! client {:op "eval" :session session
+                                 :code "(println :started) (flush) (Thread/sleep 10000)"}
+                         (fn [response]
+                           (when (:out response) (deliver started true))
+                           (when (nrepl/done? response) (deliver done response))))
+            (is (deref started 5000 false))
+            (is (= :interrupted (nrepl/interrupt client session nil)))
+            (is (nrepl/status? (deref done 5000 nil) "interrupted"))
+            (testing "and nothing"
+              (is (= :idle (nrepl/interrupt client session nil))))
+            (testing "in a session that isn't there"
+              (is (= :unknown-session (nrepl/interrupt client "no-such-session" nil))))))))))
 
 (deftest handler-error-test
   (let [error (promise)]
