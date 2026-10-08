@@ -83,7 +83,9 @@
         (eval-in client session "(def x 41) (in-ns 'neorepl.scratch)")
         (let [responses (eval-in client session "(clojure.core/inc user/x)")]
           (is (= ["42"] (values responses)))
-          (is (= "neorepl.scratch" (some :ns responses)))))
+          (is (= "neorepl.scratch" (some :ns responses))))
+        (testing "which describe tells"
+          (is (= "neorepl.scratch" (nrepl/session-ns client session)))))
       (testing "and don't share it"
         (is (= "user" (some :ns (eval-in client other "1")))))
       (testing "cloning a session copies its bindings, except *ns*"

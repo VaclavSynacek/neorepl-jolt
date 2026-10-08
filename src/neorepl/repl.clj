@@ -189,7 +189,9 @@
     ;; Late output comes on the client's reader thread, which mustn't wait
     ;; for the terminal: it has the responses lookups are waiting for.
     (nrepl/on-unclaimed! client #(send-off late (fn [_] (print-response %))))
-    (loop [ns "user"
+    ;; Not necessarily user: shadow-cljs starts sessions in shadow.user, and a
+    ;; named session is wherever it was left.
+    (loop [ns (or (nrepl/session-ns client session) "user")
            pending nil]
       (let [code (or pending (read-code ns))
             [name arg more] (some-> code command-call)

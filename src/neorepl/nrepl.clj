@@ -192,6 +192,12 @@
   [client session]
   (not-any? #(status? % "unknown-session") (request client {:op "close" :session session})))
 
+(defn session-ns
+  "The name of the namespace session is in, or nil when the server doesn't
+  say."
+  [client session]
+  (some #(get-in % [:aux :current-ns]) (request client {:op "describe" :session session})))
+
 (defn interrupt
   "Asks the server to interrupt the evaluation with message id in session, or
   whichever is running there when id is nil. Returns how that went:
