@@ -24,6 +24,8 @@ current directory or one of its parents (`neorepl ports` lists the ones it
 can see) and starts a REPL. Enter evaluates the input once its forms are
 complete, Ctrl-C interrupts an evaluation and Ctrl-D exits. Code gets
 highlighted, values get pretty printed and the history is kept per project.
+TAB completes, the arglists of the function you're calling show up after
+the cursor and C-x C-d shows the documentation of what's at the cursor.
 Without a terminal, say in a pipe or Emacs' `M-x shell`, it works like
 `clojure.main`'s REPL instead.
 

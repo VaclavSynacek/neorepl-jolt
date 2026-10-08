@@ -4,11 +4,14 @@
   (:refer-clojure :exclude [read-line])
   (:require [clojure.string :as str]
             [neorepl.lexer :as lexer])
-  (:import #?(:bb (org.jline.reader ParsedLine)
-              :clj (org.jline.reader CompletingParsedLine))
-           (org.jline.reader EOFError EndOfFileException Highlighter LineReader
-                             LineReader$Option LineReaderBuilder Parser
-                             Parser$ParseContext UserInterruptException)
+  (:import (java.util List)
+           #?@(:bb []
+               :clj [(org.jline.reader CompletingParsedLine)])
+           (org.jline.keymap KeyMap)
+           (org.jline.reader Candidate Completer EOFError EndOfFileException Highlighter
+                             LineReader LineReader$Option LineReader$SuggestionType
+                             LineReaderBuilder ParsedLine Parser Parser$ParseContext Reference
+                             UserInterruptException Widget)
            (org.jline.terminal Size Terminal Terminal$Signal Terminal$SignalHandler
                                TerminalBuilder)
            (org.jline.utils AttributedString AttributedStringBuilder AttributedStyle)))
@@ -65,21 +68,24 @@
     (.toAttributedString sb)))
 
 (defn- parsed-line
-  "A ParsedLine for line that's all one word, which is all JLine needs to know
-  until there's completion. On the JVM it's a CompletingParsedLine, without
-  which JLine warns, but babashka doesn't have that interface."
+  "A ParsedLine for line whose word, the one completion completes, is what's
+  before the cursor of the symbol or keyword it's in. On the JVM it's a
+  CompletingParsedLine, without which JLine warns, but babashka doesn't have
+  that interface."
   [^String line cursor]
-  (reify #?(:bb ParsedLine :clj CompletingParsedLine)
-    (word [_] line)
-    (wordCursor [_] cursor)
-    (wordIndex [_] 0)
-    (words [_] [line])
-    (line [_] line)
-    (cursor [_] cursor)
-    #?@(:bb []
-        :clj [(escape [_ candidate _] candidate)
-              (rawWordCursor [_] cursor)
-              (rawWordLength [_] (count line))])))
+  (let [start (or (:start (lexer/symbol-at (lexer/lex line) cursor)) cursor)
+        word (subs line start cursor)]
+    (reify #?(:bb ParsedLine :clj CompletingParsedLine)
+      (word [_] word)
+      (wordCursor [_] (count word))
+      (wordIndex [_] 0)
+      (words [_] [word])
+      (line [_] line)
+      (cursor [_] cursor)
+      #?@(:bb []
+          :clj [(escape [_ candidate _] candidate)
+                (rawWordCursor [_] (count word))
+                (rawWordLength [_] (count word))]))))
 
 (defn- parser
   "Tells JLine to keep reading when the forms aren't complete, unless it's
@@ -93,14 +99,57 @@
         (throw (EOFError. -1 -1 "Incomplete form")))
       (parsed-line line cursor))))
 
-(defn- highlighter [styles raw?]
+(defn- highlighter
+  "Highlights code, and has (eldoc text cursor) say what to show after the
+  cursor. JLine highlights on every redisplay, so eldoc sees every change to
+  the line, whatever made it."
+  [styles raw? eldoc]
   (reify Highlighter
-    (highlight [_ _ buffer]
+    (highlight [_ reader buffer]
       (if @raw?
         (AttributedString. buffer)
-        (highlight styles buffer)))
+        (do (when eldoc
+              (let [cursor (.cursor (.getBuffer ^LineReader reader))]
+                (.setTailTip ^LineReader reader
+                             ;; JLine only shows it with the cursor at the end.
+                             (or (when (= cursor (count buffer))
+                                   (eldoc buffer cursor))
+                                 ""))))
+            (highlight styles buffer))))
     (setErrorPattern [_ _])
     (setErrorIndex [_ _])))
+
+(defn- safely
+  "f, returning nil rather than throwing: a lookup going wrong mustn't take
+  the line being edited down with it."
+  [f]
+  (fn [& args]
+    (try
+      (apply f args)
+      (catch Exception _ nil))))
+
+(defn- completer
+  "Completes the word at the cursor with what (complete prefix) returns:
+  maps with the :candidate and maybe its :type."
+  [complete]
+  (reify Completer
+    (complete [_ _ line candidates]
+      (let [prefix (.word ^ParsedLine line)]
+        ;; Everything would be too much.
+        (when (seq prefix)
+          (doseq [{:keys [candidate type]} (complete prefix)]
+            (.add ^List candidates (Candidate. candidate candidate nil type nil nil false))))))))
+
+(defn- widget ^Widget [f]
+  (reify Widget
+    (apply [_] (boolean (f)))))
+
+(defn- bind-widget
+  "Adds f as a widget called name, on keys in the Emacs and vi insert keymaps."
+  [^LineReader reader name keys f]
+  (.put (.getWidgets reader) name (widget f))
+  (doseq [keymap [LineReader/EMACS LineReader/VIINS]]
+    (.bind ^KeyMap (.get (.getKeyMaps reader) keymap) (Reference. name) ^CharSequence keys)))
 
 (defn- terminal
   "The system terminal, or one on input and output for tests."
@@ -135,9 +184,16 @@
 
     :history-file  where to keep the history
     :color?        false for no colors
+    :complete      (complete prefix) for the completions of prefix, as
+                   features/complete has them
+    :eldoc         (eldoc text cursor) for the text to show after the
+                   cursor while typing, like the arglists of the function
+                   being called
+    :eldoc?        false to show nothing there after all
+    :doc           (doc text cursor) for the documentation C-x C-d shows
     :input, :output, :width and :type
                    a terminal on these streams instead, for tests"
-  [{:keys [history-file color? input] :or {color? true} :as opts}]
+  [{:keys [history-file color? complete eldoc eldoc? doc input] :or {color? true eldoc? true} :as opts}]
   (when (or input (maybe-terminal?))
     (let [terminal (terminal opts)]
       (if (str/starts-with? (.getType terminal) "dumb")
@@ -149,20 +205,35 @@
                           (.terminal terminal)
                           (.appName "neorepl")
                           (.parser (parser raw?))
-                          (.highlighter (highlighter styles raw?))
+                          (.highlighter (highlighter styles raw? (when eldoc? (some-> eldoc safely))))
                           (.variable LineReader/SECONDARY_PROMPT_PATTERN "%P #_=> ")
                           ;; ! is just a character in Clojure code.
                           (.option LineReader$Option/DISABLE_EVENT_EXPANSION true))]
           (when history-file
             (.variable builder LineReader/HISTORY_FILE (str history-file)))
-          {:terminal terminal
-           :reader (.build builder)
-           :raw? raw?
-           :styles styles
-           :lock (Object.)
-           ;; What's been printed of the line the cursor's on.
-           :line (atom "")
-           :above (atom (AttributedString. ""))})))))
+          (when complete
+            (.completer builder (completer (safely complete))))
+          (let [reader (.build builder)
+                editor {:terminal terminal
+                        :reader reader
+                        :raw? raw?
+                        :styles styles
+                        :lock (Object.)
+                        ;; What's been printed of the line the cursor's on.
+                        :line (atom "")
+                        :above (atom (AttributedString. ""))}]
+            (when (and eldoc eldoc?)
+              (.setAutosuggestion reader LineReader$SuggestionType/TAIL_TIP))
+            (when doc
+              (let [doc (safely doc)]
+                (bind-widget reader "neorepl-doc" (str (KeyMap/ctrl \X) (KeyMap/ctrl \D))
+                             #(let [buffer (.getBuffer reader)]
+                                (when-let [text (doc (str buffer) (.cursor buffer))]
+                                  ;; Straight to JLine: widgets run with its lock held,
+                                  ;; and print-text would take the editor's on top.
+                                  (.printAbove reader ^String text))
+                                true))))
+            editor))))))
 
 (defn close [{:keys [^Terminal terminal]}]
   (.close terminal))
@@ -226,6 +297,8 @@
 (defn- read-with
   "Reads a line with prompt. JLine always ends that line."
   [{:keys [^Terminal terminal ^LineReader reader line]} prompt]
+  ;; Whatever eldoc showed last time is stale.
+  (.setTailTip reader "")
   (try
     (.readLine reader ^String prompt)
     (catch UserInterruptException e

@@ -19,7 +19,10 @@
   calls (f type screen): type types a string, screen waits for a regex to
   show up in the output, ANSI codes stripped, and returns it. Then ends the
   REPL with Ctrl-D and returns its raw output and the history file's
-  contents."
+  contents.
+
+  Eldoc is off unless opts say :eldoc? true, since what it shows after the
+  cursor gets in the way of reading the screen."
   [opts f]
   (call-with-temp-dir
    (fn [dir]
@@ -30,7 +33,8 @@
                                     {:dir dir
                                      :sessions-file (io/file dir "sessions.edn")
                                      :history-dir (io/file dir "history")
-                                     :terminal (merge {:input in :output out :width 80} opts)}))
+                                     :terminal (merge {:input in :output out :width 80 :eldoc? false}
+                                                      opts)}))
              type (fn [s]
                     (.write keys (.getBytes ^String s "UTF-8"))
                     (.flush keys))
@@ -173,3 +177,39 @@
                                         :output (ByteArrayOutputStream.)
                                         :width 80
                                         :type "dumb"}})))))))))
+
+(deftest lookup-test
+  (testing "TAB completes"
+    (call-with-repl {}
+      (fn [type screen]
+        (type "(mapc")
+        (type "\t")
+        (type " list [[1]])\r")
+        (is (screen #"(?m)^\(\[1\]\)\nuser=> $")))))
+  (testing "eldoc shows the arglists of the function being called"
+    (call-with-repl {:eldoc? true}
+      (fn [type screen]
+        (type "(mapcat ")
+        (is (screen #"\[f\] \[f & colls\]"))
+        (type "\u0003"))))
+  (testing "eldoc for something that isn't a function"
+    (call-with-repl {:eldoc? true}
+      (fn [type screen]
+        (type "(def cfg {:a 1})\r")
+        (screen #"#'user/cfg\nuser=> $")
+        (type "(cfg :a)\r")
+        (is (screen #"(?m)^1\nuser=> $")))))
+  (testing "C-x C-d on a keyword shows the call's documentation"
+    (call-with-repl {}
+      (fn [type screen]
+        (type "(assoc {} :k")
+        (type "\u0018\u0004")
+        (is (screen #"clojure\.core/assoc\n"))
+        (type "\u0003"))))
+  (testing "C-x C-d shows the documentation"
+    (call-with-repl {}
+      (fn [type screen]
+        (type "(when")
+        (type "\u0018\u0004")
+        (is (screen #"clojure\.core/when\n\(\[test & body\]\)\nMacro\n  Evaluates test"))
+        (type "\u0003")))))

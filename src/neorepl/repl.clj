@@ -4,6 +4,7 @@
             [clojure.string :as str]
             [neorepl.editor :as editor]
             [neorepl.evaluation :as evaluation]
+            [neorepl.features :as features]
             [neorepl.lexer :as lexer]
             [neorepl.nrepl :as nrepl])
   (:import (java.security MessageDigest)
@@ -58,8 +59,8 @@
                    id)}))
 
 (defn- run-loop
-  "Reads code with read-code, a function of the prompt, and evaluates it in
-  session until the input ends or says :repl/quit. Responses go to
+  "Reads code with read-code, a function of the current namespace's name,
+  and evaluates it in session until the input ends or says :repl/quit. Responses go to
   print-response, late ones too, and result messages to print-message.
 
   What an interrupted evaluation says from then on is left out, since it
@@ -67,10 +68,13 @@
   read from *in* got cut short."
   [client session {:keys [running interrupted]} {:keys [read-code read-line width print-response print-message]}]
   (let [print-response #(when-not (= (:id %) @interrupted)
-                          (print-response %))]
-    (nrepl/on-unclaimed! client print-response)
+                          (print-response %))
+        late (agent nil :error-mode :continue)]
+    ;; Late output comes on the client's reader thread, which mustn't wait
+    ;; for the terminal: it has the responses lookups are waiting for.
+    (nrepl/on-unclaimed! client #(send-off late (fn [_] (print-response %))))
     (loop [ns "user"]
-      (let [code (read-code (str ns "=> "))]
+      (let [code (read-code ns)]
         (cond
           (or (nil? code) (= ":repl/quit" (str/trim code))) nil
           (str/blank? code) (recur ns)
@@ -100,8 +104,8 @@
         previous (on-sigint #(when-not (interrupt) (System/exit 130)))]
     (try
       (run-loop client session interruptions
-                {:read-code (fn [prompt]
-                              (print prompt)
+                {:read-code (fn [ns]
+                              (print (str ns "=> "))
                               (flush)
                               (read-input))
                  :width (constantly 80)
@@ -139,16 +143,50 @@
            clojure (str " (Clojure " clojure ")"))
          ". Ctrl-D or :repl/quit exits.\n")))
 
+(defn- lookups
+  "What the line editor's completion, eldoc and C-x C-d need, looking names
+  up in the namespace the REPL's in, plus :in-ns, to say which that is.
+  Lookups get cached until then, since evaluating code can change what names
+  mean."
+  [client]
+  (let [current-ns (atom "user")
+        ;; Short timeouts, since these happen as the user types. Failures
+        ;; don't get cached, so a slow first lookup gets another go.
+        lookup (fn [sym] (features/info client sym @current-ns {:timeout-ms 500}))
+        cached (atom (memoize lookup))
+        info #(try
+                (@cached %)
+                (catch clojure.lang.ExceptionInfo _ nil))
+        token-at (fn [f text cursor]
+                   (when-let [token (f (lexer/lex text) cursor)]
+                     (assoc token :text (lexer/text text token))))]
+    {:complete #(features/complete client % @current-ns {:timeout-ms 2000})
+     :eldoc (fn [text cursor]
+              (when-let [{:keys [end text]} (token-at lexer/enclosing-op text cursor)]
+                ;; Not while the function's name is still being typed.
+                (when (< end cursor)
+                  (some-> (info text) features/eldoc-text))))
+     :doc (fn [text cursor]
+            (let [at (token-at lexer/symbol-at text cursor)
+                  ;; Keywords and constants have no docs, but the call they're in might.
+                  token (if (= :symbol (:type at)) at (token-at lexer/enclosing-op text cursor))]
+              (some-> token :text info features/doc-text)))
+     :in-ns (fn [ns]
+              (reset! current-ns ns)
+              (reset! cached (memoize lookup)))}))
+
 (defn- interactive
-  "The REPL with a line editor."
-  [client session editor]
+  "The REPL with a line editor. in-ns gets called with the namespace the
+  REPL's in at each prompt."
+  [client session editor in-ns]
   (let [{:keys [interrupt] :as interruptions} (interruptions client session)]
     (editor/on-interrupt editor interrupt)
     (editor/print-text editor :notice (banner client))
     (run-loop client session interruptions
-              {:read-code (fn [prompt]
+              {:read-code (fn [ns]
+                            (in-ns ns)
                             (editor/fresh-line editor)
-                            (editor/read-code editor prompt))
+                            (editor/read-code editor (str ns "=> ")))
                :read-line #(let [line (editor/read-line editor)]
                              (if (= ::editor/interrupted line)
                                (do (interrupt) :interrupted)
@@ -174,11 +212,13 @@
     :history-dir  where to keep the history, per project
     :dir          the project's directory when the client doesn't say"
   [client session {:keys [terminal history-dir dir]}]
-  (if-let [editor (some-> terminal
-                          (assoc :history-file (history-file history-dir (or (:project-dir client) dir)))
-                          editor/open)]
-    (try
-      (interactive client session editor)
-      (finally
-        (editor/close editor)))
-    (plain client session)))
+  (let [{:keys [in-ns] :as lookups} (lookups client)]
+    (if-let [editor (some-> terminal
+                            (merge (select-keys lookups [:complete :eldoc :doc])
+                                   {:history-file (history-file history-dir (or (:project-dir client) dir))})
+                            editor/open)]
+      (try
+        (interactive client session editor in-ns)
+        (finally
+          (editor/close editor)))
+      (plain client session))))
