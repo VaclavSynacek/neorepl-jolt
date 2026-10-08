@@ -10,16 +10,16 @@
   "Each lookup takes the :arg it names, unless it has none: :code-arg? says
   that's code, :args? that it's several, as a seq, and :optional? that it can
   be left out. Its :find takes the client, a context with the :ns to look in,
-  the :session and the session's :session-name, if it has one, and the
-  argument. :text turns what it finds into text, code when :code? says so,
-  and :none says what finding nothing means."
+  the :session and the session's :session-name, if it has one, as
+  neorepl.features has it, and the argument. :text turns what it finds into
+  text, code when :code? says so, and :none says what finding nothing means."
   [{:name "doc" :arg "SYM" :help "Show the documentation of SYM"
-    :find (fn [client {:keys [ns]} sym] (features/info client sym ns))
+    :find (fn [client ctx sym] (features/info client sym ctx))
     :text render/doc-text
     :none (fn [{:keys [ns]} sym] (str "Nothing called " sym " in " ns))}
    {:name "source" :arg "SYM" :help "Show the source of SYM"
-    :find (fn [client {:keys [ns]} sym]
-            (some->> (features/source client sym ns) (hash-map :source)))
+    :find (fn [client ctx sym]
+            (some->> (features/source client sym ctx) (hash-map :source)))
     :text :source
     :code? true
     :none (fn [{:keys [ns]} sym] (str "No source for " sym " in " ns))}
@@ -28,16 +28,16 @@
     :text render/apropos-text
     :none (fn [_ regex] (str "Nothing matches " regex))}
    {:name "macroexpand" :arg "FORM" :code-arg? true :help "Expand the macro FORM calls"
-    :find (fn [client {:keys [ns]} form] {:expansion (features/expand client form ns false)})
+    :find (fn [client ctx form] {:expansion (features/expand client form ctx false)})
     :text :expansion
     :code? true}
    {:name "macroexpand-all" :arg "FORM" :code-arg? true :help "Expand every macro in FORM"
-    :find (fn [client {:keys [ns]} form] {:expansion (features/expand client form ns true)})
+    :find (fn [client ctx form] {:expansion (features/expand client form ctx true)})
     :text :expansion
     :code? true}
    {:name "where" :arg "SYM" :help "Show where SYM is defined"
-    :find (fn [client {:keys [ns]} sym]
-            (let [{:keys [file] :as info} (features/info client sym ns)]
+    :find (fn [client ctx sym]
+            (let [{:keys [file] :as info} (features/info client sym ctx)]
               (when file
                 (select-keys info [:file :line :column]))))
     :text render/location-text

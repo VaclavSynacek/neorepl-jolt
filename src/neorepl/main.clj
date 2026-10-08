@@ -585,7 +585,7 @@ them."
   (let [prefix (the-arg args "PREFIX")]
     (with-client options dir
       (fn [client]
-        (print-rows format (juxt :candidate (comp str :type)) (features/complete client prefix ns))
+        (print-rows format (juxt :candidate (comp str :type)) (features/complete client prefix {:ns ns}))
         0))))
 
 (def ^:private apropos-options

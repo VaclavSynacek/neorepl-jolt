@@ -4,7 +4,10 @@
   nREPL has built in, then evaluating code. Anything evaluated runs outside
   the user's sessions, so *1 and *e stay put.
 
-  The functions take request options last, as nrepl/request does, for a
+  The lookups take a ctx saying where to look: the :ns, and the :session
+  the lookup's for, if any. cider-nrepl answers in that session's language,
+  so a session in ClojureScript mode gets ClojureScript's answers. The
+  functions take request options last, as nrepl/request does, for a
   :timeout-ms. They throw ::failed when the server reports an error, which
   isn't the same as finding nothing."
   (:require [clojure.edn :as edn]
@@ -40,6 +43,13 @@
                 opts)
            (some :value)
            edn/read-string))
+
+(defn- lookup-msg
+  "msg, looking something up where ctx says."
+  [msg {:keys [ns session]}]
+  ;; Only ops that don't evaluate, so the session's *1 and *e stay put.
+  (cond-> (assoc msg :ns ns)
+    session (assoc :session session)))
 
 (defn- truthy [x]
   (contains? #{true "true"} x))
@@ -86,26 +96,26 @@
       forms-str (assoc :forms (str/split-lines forms-str)))))
 
 (defn info
-  "What the server knows about sym, a symbol's text, as seen from the
-  namespace ns: a map with its :ns and :name, :arglists, :doc and where it
+  "What the server knows about sym, a symbol's text, as seen from where ctx
+  says: a map with its :ns and :name, :arglists, :doc and where it
   is, :file, :line and :column, when it's in a file. Nil when sym means
   nothing there."
-  ([client sym ns] (info client sym ns {}))
-  ([client sym ns opts]
+  ([client sym ctx] (info client sym ctx {}))
+  ([client sym ctx opts]
    (cond
      (supports? client "info")
-     (let [info (apply merge (ask client {:op "info" :sym sym :ns ns} opts))]
+     (let [info (apply merge (ask client (lookup-msg {:op "info" :sym sym} ctx) opts))]
        (when (:name info)
          (normalize-info info)))
 
      (supports? client "lookup")
-     (let [info (some :info (ask client {:op "lookup" :sym sym :ns ns} opts))]
+     (let [info (some :info (ask client (lookup-msg {:op "lookup" :sym sym} ctx) opts))]
        ;; Nothing found comes back as an empty list.
        (when (map? info)
          (normalize-info info)))
 
      :else
-     (some-> (eval-data client {:ns ns} "(when-let [m (meta (resolve (symbol %s)))]
+     (some-> (eval-data client (select-keys ctx [:ns]) "(when-let [m (meta (resolve (symbol %s)))]
                                     {:ns (str (:ns m))
                                      :name (str (:name m))
                                      :arglists-str (some->> (:arglists m) (map pr-str) (interpose \"\\n\") (apply str))
@@ -118,21 +128,21 @@
              normalize-info))))
 
 (defn complete
-  "The completions for prefix in the namespace ns, as maps with the
-  :candidate and, when the server says, its :type and :ns."
-  ([client prefix ns] (complete client prefix ns {}))
-  ([client prefix ns opts]
+  "The completions for prefix where ctx says, as maps with the :candidate
+  and, when the server says, its :type and :ns."
+  ([client prefix ctx] (complete client prefix ctx {}))
+  ([client prefix ctx opts]
    (when-let [op (some (:ops client) ["complete" "completions"])]
-     (->> (ask client {:op op :prefix prefix :ns ns} opts)
+     (->> (ask client (lookup-msg {:op op :prefix prefix} ctx) opts)
           (some :completions)
           (mapv #(select-keys % [:candidate :type :ns]))))))
 
 (defn source
-  "The source of the var sym names in the namespace ns, or nil when the
+  "The source of the var sym names in the namespace ctx has, or nil when the
   server can't find it."
-  ([client sym ns] (source client sym ns {}))
-  ([client sym ns opts]
-   (eval-data client {:ns ns} "(do (require 'clojure.repl) (clojure.repl/source-fn (symbol %s)))" [sym] opts)))
+  ([client sym ctx] (source client sym ctx {}))
+  ([client sym ctx opts]
+   (eval-data client (select-keys ctx [:ns]) "(do (require 'clojure.repl) (clojure.repl/source-fn (symbol %s)))" [sym] opts)))
 
 (defn apropos
   "The vars whose names match the regex, as maps with the :name and, when
@@ -157,22 +167,22 @@
     (throw (ex-info "Give one form to expand, without #=" {:type ::failed}))))
 
 (defn expand
-  "The form in text with macros expanded in the namespace ns, pretty printed:
-  just the form itself, the way macroexpand-1 does, or every macro in it with
+  "The form in text with macros expanded where ctx says, pretty printed: just
+  the form itself, the way macroexpand-1 does, or every macro in it with
   all?"
-  ([client text ns all?] (expand client text ns all? {}))
-  ([client text ns all? opts]
+  ([client text ctx all?] (expand client text ctx all? {}))
+  ([client text ctx all? opts]
    (one-form text)
    (if (supports? client "macroexpand")
-     (->> (ask client {:op "macroexpand"
-                       :code text
-                       :ns ns
-                       :expander (if all? "macroexpand-all" "macroexpand-1")
-                       ;; Without the namespaces of what the namespace refers.
-                       :display-namespaces "tidy"}
+     (->> (ask client (lookup-msg {:op "macroexpand"
+                                   :code text
+                                   :expander (if all? "macroexpand-all" "macroexpand-1")
+                                   ;; Without the namespaces of what the namespace refers.
+                                   :display-namespaces "tidy"}
+                                  ctx)
                opts)
           (some :expansion))
-     (some-> (eval-data client {:ns ns}
+     (some-> (eval-data client (select-keys ctx [:ns])
                         "(do (require 'clojure.pprint 'clojure.walk)
                              (with-out-str
                                (clojure.pprint/pprint

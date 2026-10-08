@@ -30,6 +30,9 @@
                "if" (transport/respond-to msg :status "done" :name "if" :special-form "true"
                                           :forms-str "(if test then else?)")
                "broken" (transport/respond-to msg :status ["done" "info-error"])
+               ;; Says which session it was asked in.
+               "session" (transport/respond-to msg :status "done" :ns "user" :name "session"
+                                               :doc (:session msg))
                (transport/respond-to msg :status ["done" "no-info"]))
       "complete" (transport/respond-to msg :status "done"
                                        :completions [{:candidate "map" :type "function" :ns "clojure.core"}])
@@ -59,6 +62,9 @@
                                                          "macroexpand" {} "analyze-last-stacktrace" {}
                                                          "refresh" {}}})
 
+(def ^:private user
+  {:ns "user"})
+
 (defn- without
   "client, pretending its server doesn't have ops."
   [client & ops]
@@ -68,43 +74,48 @@
   (with-client [client {:port *port*}]
     (doseq [[rung client] {"lookup" client "eval" (without client "lookup")}]
       (testing rung
-        (let [info (features/info client "map" "user")]
+        (let [info (features/info client "map" user)]
           (is (= {:ns "clojure.core" :name "map"}
                  (select-keys info [:ns :name])))
           (is (= ["[f]" "[f coll]"] (take 2 (:arglists info))))
           (is (str/starts-with? (:doc info) "Returns a lazy sequence"))
           (is (pos? (:line info))))
         (testing "macros"
-          (is (:macro (features/info client "when" "user"))))
+          (is (:macro (features/info client "when" user))))
         (testing "nothing there"
-          (is (nil? (features/info client "no-such-thing" "user"))))
+          (is (nil? (features/info client "no-such-thing" user))))
         (testing "nowhere for what was made at a REPL"
           (nrepl/request client {:op "eval" :ns "user" :code "(defn made-at-the-repl [])"})
           (is (= {:ns "user" :name "made-at-the-repl"}
-                 (select-keys (features/info client "made-at-the-repl" "user") [:ns :name :file :line]))))
+                 (select-keys (features/info client "made-at-the-repl" user) [:ns :name :file :line]))))
         (testing "symbols are only ever symbols"
-          (is (nil? (features/info client "(System/exit 1)" "user"))))))
+          (is (nil? (features/info client "(System/exit 1)" user))))
+        (testing "in a session, leaving its *1 alone"
+          (let [session (nrepl/clone-session client)]
+            (nrepl/request client {:op "eval" :session session :code "42"})
+            (is (= "map" (:name (features/info client "map" (assoc user :session session)))))
+            (is (= ["42"] (keep :value (nrepl/request client {:op "eval" :session session :code "*1"}))))))))
     (testing "special forms"
       (is (= {:special-form true :forms ["(if test then else?)"]}
-             (select-keys (features/info client "if" "user") [:special-form :forms])))
+             (select-keys (features/info client "if" user) [:special-form :forms])))
       ;; On babashka they're macros, without forms.
       (when-not (System/getProperty "babashka.version")
         (testing "with nested shapes and bare symbols"
           (is (= "(Classname/staticMethod args*) Classname/staticField"
-                 (->> (features/info client "." "user") :forms (take-last 2) (str/join " ")))))))))
+                 (->> (features/info client "." user) :forms (take-last 2) (str/join " ")))))))))
 
 (deftest complete-test
   (with-client [client {:port *port*}]
     ;; Only the JVM's nREPL says what type a candidate is.
     (is (some #(= {:candidate "mapcat" :ns "clojure.core"} (dissoc % :type))
-              (features/complete client "mapc" "user")))
+              (features/complete client "mapc" user)))
     (testing "no completion without the ops for it"
-      (is (nil? (features/complete (without client "completions") "mapc" "user"))))))
+      (is (nil? (features/complete (without client "completions") "mapc" user))))))
 
 (deftest source-test
   (with-client [client {:port *port*}]
-    (is (str/starts-with? (features/source client "when" "user") "(defmacro when"))
-    (is (nil? (features/source client "no-such-thing" "user")))))
+    (is (str/starts-with? (features/source client "when" user) "(defmacro when"))
+    (is (nil? (features/source client "no-such-thing" user)))))
 
 (deftest apropos-test
   (with-client [client {:port *port*}]
@@ -112,11 +123,11 @@
 
 (deftest expand-test
   (with-client [client {:port *port*}]
-    (is (= "(if x (do y))" (features/expand client "(when x y)" "user" false)))
-    (is (str/includes? (features/expand client "(when-let [a 1] a)" "user" true) "let*"))
+    (is (= "(if x (do y))" (features/expand client "(when x y)" user false)))
+    (is (str/includes? (features/expand client "(when-let [a 1] a)" user true) "let*"))
     (testing "one form, only ever read, not evaluated"
       (are [text] (= ::features/failed
-                     (:type (ex-data (is (thrown? clojure.lang.ExceptionInfo (features/expand client text "user" false))))))
+                     (:type (ex-data (is (thrown? clojure.lang.ExceptionInfo (features/expand client text user false))))))
         "#=(System/exit 1)"
         "(when x y) (+ 1 2)"
         "x) (spit \"/tmp/p\" 1"
@@ -154,7 +165,7 @@
   (with-client [client {:port *port*}]
     (testing "errors aren't the same as finding nothing"
       (are [f] (= ::features/failed (:type (ex-data (is (thrown? clojure.lang.ExceptionInfo (f client))))))
-        #(features/source % "map" "no.such.ns")
+        #(features/source % "map" {:ns "no.such.ns"})
         #(features/apropos % "(")
         #(features/reload % ["no.such.ns"])))))
 
@@ -165,20 +176,23 @@
         (testing "cider-nrepl's ops come first"
           (is (= {:ns "clojure.core" :name "map" :arglists ["[f]" "[f coll]"] :doc "Cider's map."
                   :file (str (io/file "/tmp/a b/core.clj")) :line 1}
-                 (features/info client "map" "user")))
+                 (features/info client "map" user)))
           (testing "with files in jars as they are, and none for what was made at a REPL"
-            (is (= "jar:file:/x.jar!/clojure/core.clj" (:file (features/info client "mapv" "user"))))
-            (is (= {:ns "user" :name "made-at-the-repl"} (features/info client "made-at-the-repl" "user"))))
+            (is (= "jar:file:/x.jar!/clojure/core.clj" (:file (features/info client "mapv" user))))
+            (is (= {:ns "user" :name "made-at-the-repl"} (features/info client "made-at-the-repl" user))))
           (is (= {:name "if" :special-form true :forms ["(if test then else?)"]}
-                 (features/info client "if" "user")))
-          (is (nil? (features/info client "no-such-thing" "user")))
+                 (features/info client "if" user)))
+          (is (nil? (features/info client "no-such-thing" user)))
+          (testing "in the session asked for, where it's in ClojureScript, say"
+            (let [session (nrepl/clone-session client)]
+              (is (= session (:doc (features/info client "session" (assoc user :session session)))))))
           (is (= ::features/failed
-                 (:type (ex-data (is (thrown? clojure.lang.ExceptionInfo (features/info client "broken" "user")))))))
+                 (:type (ex-data (is (thrown? clojure.lang.ExceptionInfo (features/info client "broken" user)))))))
           (is (= [{:candidate "map" :type "function" :ns "clojure.core"}]
-                 (features/complete client "ma" "user")))
+                 (features/complete client "ma" user)))
           (is (= [{:name "clojure.core/map" :type "function" :doc "Cider's map.\nMore."}]
                  (features/apropos client "map")))
-          (is (= "Cider's macroexpand-all" (features/expand client "(when x y)" "user" true)))
+          (is (= "Cider's macroexpand-all" (features/expand client "(when x y)" user true)))
           (is (= {:reloaded ["changed.ns"] :output "Reflection warning, changed/ns.clj:3:1\n"}
                  (features/reload client [])))
           (reset! refresh-fails? true)

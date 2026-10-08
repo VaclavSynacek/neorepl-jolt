@@ -110,8 +110,8 @@
 (defn- edit
   "Opens the definition of sym with the :editor-command, with the terminal
   :suspended for it. Returns what to print, as command-output does."
-  [{:keys [client ns editor-command suspended]} sym]
-  (let [{:keys [found none]} (lookups/run "where" client {:ns ns} sym)
+  [{:keys [client editor-command suspended] :as state} sym]
+  (let [{:keys [found none]} (lookups/run "where" client state sym)
         {:keys [file line]} found]
     (cond
       none (out none)
@@ -296,14 +296,15 @@
 
 (defn- lookups
   "What the line editor's completion, eldoc and C-x C-d need, looking names
-  up in the namespace the REPL's in, plus :in-ns, to say which that is.
-  Lookups get cached until then, since evaluating code can change what names
-  mean."
-  [client]
+  up in session, in the namespace the REPL's in, plus :in-ns, to say which
+  that is. Lookups get cached until then, since evaluating code can change
+  what names mean."
+  [client session]
   (let [current-ns (atom "user")
+        ctx #(hash-map :ns @current-ns :session session)
         ;; Short timeouts, since these happen as the user types. Failures
         ;; don't get cached, so a slow first lookup gets another go.
-        lookup (fn [sym] (features/info client sym @current-ns {:timeout-ms 500}))
+        lookup (fn [sym] (features/info client sym (ctx) {:timeout-ms 500}))
         cached (atom (memoize lookup))
         info #(try
                 (@cached %)
@@ -311,7 +312,7 @@
         token-at (fn [f text cursor]
                    (when-let [token (f (lexer/lex text) cursor)]
                      (assoc token :text (lexer/text text token))))]
-    {:complete #(features/complete client % @current-ns {:timeout-ms 2000})
+    {:complete #(features/complete client % (ctx) {:timeout-ms 2000})
      :eldoc (fn [text cursor]
               (when-let [{:keys [end text]} (token-at lexer/enclosing-op text cursor)]
                 ;; Not while the function's name is still being typed.
@@ -367,7 +368,7 @@
     :editor-command
                   the command line ,edit opens files with, like EDITOR's"
   [client session {:keys [terminal history-dir dir editor-command]}]
-  (let [{:keys [in-ns] :as lookups} (lookups client)]
+  (let [{:keys [in-ns] :as lookups} (lookups client session)]
     (if-let [editor (some-> terminal
                             (merge (select-keys lookups [:complete :eldoc :doc])
                                    {:incomplete? incomplete?

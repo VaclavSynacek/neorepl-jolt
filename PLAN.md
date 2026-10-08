@@ -99,7 +99,7 @@ Each feature tries the rungs left to right.
 | Pretty printing | `cider.nrepl.pprint` printers | `print` middleware | |
 | Interrupt, stdin, load-file, sessions | | built-in ops | |
 
-Tooling requests (completion, eldoc, ...) go through a separate cloned session so they don't clobber `*1`/`*e` in the user's session, the same trick CIDER uses. The error fallback has to read `*e` from the user session, so it needs care not to disturb `*1`.
+Tooling requests that don't evaluate anything (completion, eldoc, ...) go to the user's session, as CIDER sends them, since that's where a ClojureScript REPL keeps its state. The eval fallbacks run outside it, so they don't clobber `*1`/`*e`. The error fallback has to read `*e` from the user session, so it evaluates in a copy.
 
 ## Interactive REPL
 
