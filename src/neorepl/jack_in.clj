@@ -2,7 +2,8 @@
   "Starting an nREPL server for a project, with cider-nrepl, the way CIDER's
   jack-in does: the project's own build tool runs it, so it has the
   project's classpath."
-  (:require [clojure.java.io :as io]
+  (:require [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [clojure.string :as str]
             [neorepl.discovery :as discovery]
             [neorepl.shutdown :as shutdown])
@@ -10,19 +11,35 @@
 
 (def versions
   "What goes on the server's classpath: nREPL, newer than what the build tool
-  might bring, and cider-nrepl."
+  might bring, and cider-nrepl. shadow-cljs only gets cider-nrepl, since it
+  comes with the nREPL it's made for."
   {:nrepl "1.8.0"
    :cider-nrepl "0.63.1"})
 
+(defn- builds-with-project?
+  "Whether the shadow-cljs.edn in dir has shadow-cljs build with the
+  deps.edn or project.clj next to it, as its :deps or :lein says."
+  [dir]
+  (let [config (try
+                 ;; Tags like #shadow/env as they are.
+                 (edn/read-string {:default (fn [_ v] v)} (slurp (io/file dir "shadow-cljs.edn")))
+                 (catch Exception _ nil))]
+    (or (and (:deps config) (.isFile (io/file dir "deps.edn")))
+        (and (:lein config) (.isFile (io/file dir "project.clj"))))))
+
 (def tools
-  "The build tools jack-in knows, by the file a project of theirs has, and
-  whether they take :aliases?, deps.edn aliases or Leiningen profiles. A
-  directory with several files goes with the first: a deps.edn next to a
-  project.clj is usually there for tooling, and a bb.edn next to either
-  holds the project's tasks."
-  [{:tool "lein" :file "project.clj" :aliases? true}
-   {:tool "clojure" :file "deps.edn" :aliases? true}
-   {:tool "bb" :file "bb.edn"}])
+  "The build tools jack-in knows, by the file a project of theirs has,
+  whether they take :aliases?, deps.edn aliases or Leiningen profiles, and
+  a :port?. A directory with several files goes with the first, unless
+  (first? dir) says otherwise: a deps.edn next to a project.clj is usually
+  there for tooling, a bb.edn next to either holds the project's tasks, and
+  a shadow-cljs.edn builds the ClojureScript part, unless it builds with
+  the project's deps.edn or project.clj, when its server has it all."
+  [{:tool "lein" :file "project.clj" :aliases? true :port? true}
+   {:tool "clojure" :file "deps.edn" :aliases? true :port? true}
+   {:tool "bb" :file "bb.edn" :port? true}
+   ;; It takes its port and aliases from shadow-cljs.edn.
+   {:tool "shadow-cljs" :file "shadow-cljs.edn" :first? builds-with-project?}])
 
 (defn tool
   "The entry in tools for the tool called name."
@@ -37,15 +54,20 @@
       (str (str/join ", " (butlast files)) " or " (last files))
       (first files))))
 
+(defn- tools-in
+  "The tools with their files in dir, in the order to pick them."
+  [dir]
+  (sort-by #(not (when-let [first? (:first? %)] (first? dir)))
+           (filter #(.isFile (io/file dir (:file %))) tools)))
+
 (defn find-project
   "The project dir is in: the nearest directory, dir or a parent, with a file
   of tool's, or of any tool's without one, as its :dir and the :tool to use.
   Nil when there's none."
   [dir tool-name]
   (first (for [d (discovery/dirs dir)
-               {:keys [file] :as t} tools
-               :when (and (or (nil? tool-name) (= tool-name (:tool t)))
-                          (.isFile (io/file d file)))]
+               t (tools-in d)
+               :when (or (nil? tool-name) (= tool-name (:tool t)))]
            {:dir (str d) :tool (:tool t)})))
 
 (defn no-project
@@ -56,8 +78,9 @@
 
 (defn command
   "The command line that starts an nREPL server with cider-nrepl for tool,
-  on port, or any port without one. aliases are the deps.edn aliases, or
-  Leiningen profiles, to start it with, as names without the colon."
+  on port, or any port without one, for the tools that take one. aliases are
+  the deps.edn aliases, or Leiningen profiles, to start it with, as names
+  without the colon, for the tools that take them."
   [tool-name {:keys [aliases port]}]
   (let [{:keys [nrepl cider-nrepl]} versions]
     (case tool-name
@@ -82,11 +105,13 @@
                      ["repl" ":headless"]
                      (when port [":port" (str port)]))
       ;; babashka's server has CIDER's essentials built in.
-      "bb" ["bb" "nrepl-server" (str "127.0.0.1:" (or port 0))])))
+      "bb" ["bb" "nrepl-server" (str "127.0.0.1:" (or port 0))]
+      ;; Its server loads cider-nrepl when it's there.
+      "shadow-cljs" ["npx" "shadow-cljs" "-d" (str "cider/cider-nrepl:" cider-nrepl) "server"])))
 
 (defn- address
-  "Where the server that printed line says it's listening, if it does: nREPL
-  and Leiningen say it their way, babashka its own."
+  "Where the server that printed line says it's listening, if it does: nREPL,
+  Leiningen and shadow-cljs say it their way, babashka its own."
   [line]
   (if-let [[_ port host] (re-find #"nREPL server started on port (\d+)(?: on host (\S+))?" line)]
     {:host (or host "127.0.0.1") :port (Long/parseLong port)}
@@ -95,6 +120,31 @@
 
 (def ^:private windows?
   (str/starts-with? (System/getProperty "os.name") "Windows"))
+
+(def ^:private detached
+  "A Node script running the command in its arguments in a session of its
+  own, where the terminal's signals don't reach it. It ignores SIGINT
+  itself and passes the signals that stop it on to the command, so the
+  command doesn't outlive it."
+  "process.on('SIGINT', () => {});
+const [command, ...args] = process.argv.slice(1);
+const child = require('child_process').spawn(command, args, {stdio: 'inherit', detached: true})
+  .on('error', e => { console.error(e.message); process.exit(127); })
+  .on('exit', code => process.exit(code ?? 1));
+for (const signal of ['SIGHUP', 'SIGTERM', 'SIGQUIT'])
+  process.on(signal, () => { try { process.kill(-child.pid, signal); } catch {} });")
+
+(defn- launch-command
+  "The command line that runs command so that the server ignores SIGINT,
+  which a terminal sends everything in the foreground on Ctrl-C, when it's
+  meant for whatever runs the server. A signal ignored before exec stays
+  ignored, and the JVM leaves it that way. But Node resets the signals it
+  starts with, so the JVM that npx starts needs a session of its own."
+  [command]
+  (cond
+    windows? command
+    (= "npx" (first command)) (concat ["node" "-e" detached "--"] command)
+    :else (concat ["sh" "-c" "trap '' INT; exec \"$@\"" "sh"] command)))
 
 (defn- stop
   "Stops process, and the processes it started, the way they would on
@@ -117,16 +167,10 @@
   first, even before the server's up. Each line it prints goes to
   (on-line line), on a thread of its own, the last of them before this
   returns. Throws ::failed when the server can't start, or ends before it's
-  up.
-
-  The server ignores SIGINT, which a terminal sends everything in the
-  foreground on Ctrl-C, when that's meant for whatever runs it."
+  up. Ctrl-C in the terminal doesn't stop it, see launch-command."
   [dir command on-line f]
   (let [process (try
-                  (-> (ProcessBuilder. ^java.util.List (vec (if windows?
-                                                               command
-                                                               (concat ["sh" "-c" "trap '' INT; exec \"$@\"" "sh"]
-                                                                       command))))
+                  (-> (ProcessBuilder. ^java.util.List (vec (launch-command command)))
                       (.directory (io/file dir))
                       (.redirectErrorStream true)
                       .start)

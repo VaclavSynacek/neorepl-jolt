@@ -135,7 +135,7 @@ and the like carry over from one call to the next.")
 
 (def ^:private jack-in-options
   [{:long "--tool" :arg "TOOL" :parse (set (map :tool jack-in/tools))
-    :doc "Start the server with TOOL: clojure, lein or bb (default: the project's)"}
+    :doc "Start the server with TOOL: clojure, lein, bb or shadow-cljs (default: the project's)"}
    {:long "--aliases" :arg "ALIASES" :parse parse-aliases
     :doc "Start the server with deps.edn aliases or Leiningen profiles, like :dev:test"}])
 
@@ -152,9 +152,12 @@ and the like carry over from one call to the next.")
   say, saying what it runs, and calls f with it, as jack-in/with-server
   does. What the server prints goes to (on-line line)."
   [{:keys [dir tool]} {:keys [aliases port]} on-line f]
-  (when (and aliases (not (:aliases? (jack-in/tool tool))))
-    (throw (usage-error (str "--aliases doesn't go with " tool))))
-  (let [command (jack-in/command tool {:aliases aliases :port port})]
+  (let [{:keys [file aliases? port?]} (jack-in/tool tool)
+        command (jack-in/command tool {:aliases aliases :port port})]
+    (when (and aliases (not aliases?))
+      (throw (usage-error (str "--aliases doesn't go with " tool))))
+    (when (and port (not port?))
+      (throw (usage-error (str "--port doesn't go with " tool ", which takes the port from " file))))
     (warn (str "Starting an nREPL server in " dir ": " (shell-words command)))
     ;; Printing from the thread that follows the server's output, with this
     ;; one's *out* and *err*.
@@ -752,15 +755,17 @@ drops."
   (help-text
    "Usage: neorepl server [options]"
    "Starts an nREPL server for the project in this directory, or the nearest
-parent with a project.clj, deps.edn or bb.edn. The server writes a port file,
-for neorepl and editors to find it, and runs until neorepl gets Ctrl-C or
-SIGTERM. What it prints goes to stderr, and its nrepl:// URL to stdout once
-it's up."
+parent with a project.clj, deps.edn, bb.edn or shadow-cljs.edn. The server
+writes a port file, for neorepl and editors to find it, and runs until
+neorepl gets Ctrl-C or SIGTERM. What it prints goes to stderr, and its
+nrepl:// URL to stdout once it's up."
    server-options
    "The project's build tool runs the server: Leiningen for project.clj, the
-Clojure CLI for deps.edn and babashka for bb.edn, in that order when there
-are several. The server gets cider-nrepl, for CIDER's tooling, which
-babashka's has built in."
+Clojure CLI for deps.edn, babashka for bb.edn and shadow-cljs for
+shadow-cljs.edn, in that order when there are several. Except that
+shadow-cljs goes first when it builds with the project's deps.edn or
+project.clj, as :deps or :lein in shadow-cljs.edn say. The server gets
+cider-nrepl, for CIDER's tooling, which babashka's has built in."
    "Exit status: 0 when the server ends fine, 1 when it fails to start or ends
 with an error, and 2 on usage errors."
    "Examples:

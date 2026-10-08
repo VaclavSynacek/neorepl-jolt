@@ -1,11 +1,22 @@
 (ns neorepl.jack-in-test
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
+            [clojure.java.shell :as shell]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [neorepl.jack-in :as jack-in]
             [neorepl.nrepl :as nrepl]
             [neorepl.test-server :refer [call-with-temp-dir spit-file windows? with-client]]))
+
+(defn- descendants-of
+  "The processes process started, and the ones they did."
+  [^Process process]
+  (vec (iterator-seq (.iterator (.descendants process)))))
+
+(defn- survives-sigint? [^Process process]
+  (shell/sh "kill" "-INT" (str (.pid process)))
+  (Thread/sleep 200)
+  (.isAlive process))
 
 (deftest find-project-test
   (call-with-temp-dir
@@ -24,7 +35,19 @@
          (is (nil? (jack-in/find-project dir "lein")))
          (is (= (str "No project.clj in " (path ".") " or its parents")
                 (ex-message (jack-in/no-project dir "lein"))))
-         (is (= "project.clj, deps.edn or bb.edn" (jack-in/project-files nil))))))))
+         (is (= "project.clj, deps.edn, bb.edn or shadow-cljs.edn" (jack-in/project-files nil))))
+       (testing "shadow-cljs after the rest"
+         (spit-file dir "shadow-cljs.edn" "{:builds {}}")
+         (is (= "clojure" (:tool (jack-in/find-project dir nil))))
+         (testing "unless it builds with them"
+           (spit-file dir "shadow-cljs.edn" "{:deps {:aliases [:cljs]} :http {:port #shadow/env \"PORT\"}}")
+           (is (= "shadow-cljs" (:tool (jack-in/find-project dir nil)))))
+         (testing "but not when that's a project.clj that isn't there"
+           (spit-file dir "shadow-cljs.edn" "{:lein true}")
+           (is (= "clojure" (:tool (jack-in/find-project dir nil)))))
+         (testing "or when it can't say"
+           (spit-file dir "shadow-cljs.edn" "{:deps")
+           (is (= "clojure" (:tool (jack-in/find-project dir nil))))))))))
 
 (deftest command-test
   (let [{:keys [nrepl cider-nrepl]} jack-in/versions]
@@ -50,7 +73,13 @@
       (is (= ["repl" ":headless"] (take-last 2 (jack-in/command "lein" {})))))
     (testing "babashka"
       (is (= ["bb" "nrepl-server" "127.0.0.1:0"] (jack-in/command "bb" {})))
-      (is (= ["bb" "nrepl-server" "127.0.0.1:7888"] (jack-in/command "bb" {:port 7888}))))))
+      (is (= ["bb" "nrepl-server" "127.0.0.1:7888"] (jack-in/command "bb" {:port 7888}))))
+    (testing "shadow-cljs, with the nREPL it comes with"
+      (is (= ["npx" "shadow-cljs" "-d" (str "cider/cider-nrepl:" cider-nrepl) "server"]
+             (jack-in/command "shadow-cljs" {})))
+      (when-not (windows?)
+        (testing "run through Node, which keeps Ctrl-C from it, see npx-test"
+          (is (= "node" (first (#'jack-in/launch-command (jack-in/command "shadow-cljs" {}))))))))))
 
 (deftest with-server-test
   (call-with-temp-dir
@@ -66,9 +95,7 @@
                          (is (str/starts-with? (first @lines) "Started nREPL server")))
                        (when-not (windows?)
                          (testing "with the server ignoring Ctrl-C, which is for whatever runs it"
-                           (.waitFor (.start (ProcessBuilder. ^java.util.List ["kill" "-INT" (str (.pid process))])))
-                           (Thread/sleep 200)
-                           (is (.isAlive process))))
+                           (is (survives-sigint? process))))
                        process))]
        (testing "stops it after"
          (is (not (.isAlive ^Process process)))
@@ -87,10 +114,51 @@
                  (fn [_])
                  (fn [{:keys [^Process process] :as server}]
                    (is (= {:host "x" :port 1} (select-keys server [:host :port])))
-                   [process (vec (iterator-seq (.iterator (.descendants process))))]))]
+                   [process (descendants-of process)]))]
            (is (seq children))
            (is (not (.isAlive ^Process process)))
            (is (not-any? #(.isAlive %) children))))))))
+
+(defn- on-path? [program]
+  (some #(.canExecute (io/file % program))
+        (str/split (System/getenv "PATH") (re-pattern java.io.File/pathSeparator))))
+
+(defn- process-group [pid]
+  (str/trim (:out (shell/sh "ps" "-o" "pgid=" "-p" (str pid)))))
+
+(deftest npx-test
+  ;; Node is up to whoever runs the tests.
+  (when (and (not (windows?)) (on-path? "npx"))
+    (call-with-temp-dir
+     (fn [dir]
+       (let [with-server #(jack-in/with-server dir ["npx" "-c" "echo 'nREPL server started on port 1 on host x'; sleep 60"]
+                            (fn [_])
+                            %)
+             gone? #(not (.isAlive (doto % (-> .onExit (deref 5000 nil)))))]
+         (testing "a server npx starts gets a process group of its own, out of the terminal's reach"
+           (let [[process children]
+                 (with-server
+                   (fn [{:keys [^Process process] :as server}]
+                     (is (= {:host "x" :port 1} (select-keys server [:host :port])))
+                     (testing "and what starts it ignores Ctrl-C"
+                       (is (survives-sigint? process)))
+                     (let [children (descendants-of process)
+                           group (process-group (.pid process))]
+                       (is (seq children))
+                       (is (not-any? #(= group (process-group (.pid %))) children))
+                       [process children])))]
+             (testing "and stops with the rest"
+               (is (not (.isAlive ^Process process)))
+               (is (every? gone? children)))))
+         (testing "it stops when what starts it gets a signal to, as on a hangup"
+           (let [children (with-server
+                            (fn [{:keys [^Process process]}]
+                              (let [children (descendants-of process)]
+                                (shell/sh "kill" "-HUP" (str (.pid process)))
+                                (.waitFor process)
+                                children)))]
+             (is (seq children))
+             (is (every? gone? children)))))))))
 
 (deftest failed-test
   (call-with-temp-dir

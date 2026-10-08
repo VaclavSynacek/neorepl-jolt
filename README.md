@@ -34,15 +34,24 @@ Without a terminal, say in a pipe or Emacs' `M-x shell`, it works like
 With no server to connect to, `neorepl` starts one for the project, the way
 CIDER's jack-in does, and stops it when the REPL ends. The project's build
 tool runs it, with cider-nrepl: Leiningen for a `project.clj`, the Clojure
-CLI for a `deps.edn` and babashka, which has CIDER's essentials built in, for
-a `bb.edn`. `--tool` picks another one and `--aliases` adds deps.edn aliases
-or Leiningen profiles. `neorepl server` starts one that stays up until you
-stop it, for editors, coding agents and `neorepl eval` to share:
+CLI for a `deps.edn`, babashka, which has CIDER's essentials built in, for a
+`bb.edn` and shadow-cljs for a `shadow-cljs.edn`. `--tool` picks another one
+and `--aliases` adds deps.edn aliases or Leiningen profiles. `neorepl server`
+starts one that stays up until you stop it, for editors, coding agents and
+`neorepl eval` to share:
 
 ```shell
 neorepl --aliases :dev:test
 neorepl server --port 7888
 ```
+
+ClojureScript REPLs run inside a Clojure session on the server, through
+shadow-cljs or piggieback, and the REPL follows the session there. With
+shadow-cljs, `(shadow/repl :app)` switches to the `:app` build's runtime and
+`(shadow/node-repl)` to a fresh Node one. From then on evaluations are
+ClojureScript's, and so are completion, eldoc, `,doc`, `,where` and
+`,macroexpand` when the server has cider-nrepl. `:cljs/quit` switches back. Ctrl-C can't stop ClojureScript code that's still running, so
+a second Ctrl-C stops waiting for it.
 
 `neorepl eval` evaluates code on the same server:
 

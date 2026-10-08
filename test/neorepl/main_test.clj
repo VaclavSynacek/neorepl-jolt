@@ -308,7 +308,7 @@
      (fn [dir]
        (let [{:keys [status err]} (run-in dir "" "repl")]
          (is (= 3 status))
-         (is (str/includes? err "nor a project.clj, deps.edn or bb.edn to start one for"))))))
+         (is (str/includes? err "nor a project.clj, deps.edn, bb.edn or shadow-cljs.edn to start one for"))))))
   (testing "or one in neorepl's own process"
     (is (= {:status 0 :out "user=> 3\nuser=> \n" :err ""}
            (run-in *dir* "(+ 1 2)\n" "repl" "--in-process"))))
@@ -365,7 +365,7 @@
      (fn [dir]
        (let [{:keys [status err]} (run-in dir "" "server")]
          (is (= 1 status))
-         (is (str/includes? err "No project.clj, deps.edn or bb.edn in ")))
+         (is (str/includes? err "No project.clj, deps.edn, bb.edn or shadow-cljs.edn in ")))
        (testing "of the kind asked for"
          (spit-file dir "bb.edn" "{}")
          (is (str/includes? (:err (run-in dir "" "server" "--tool" "lein")) "No project.clj in "))))))
@@ -381,6 +381,14 @@
     (call-with-temp-dir
      (fn [dir]
        (spit-file dir "bb.edn" "{}")
+       (is (= 2 (:status (run-in dir "" "server" "--aliases" ":dev")))))))
+  (testing "shadow-cljs takes no port or aliases, having its own"
+    (call-with-temp-dir
+     (fn [dir]
+       (spit-file dir "shadow-cljs.edn" "{}")
+       (let [{:keys [status err]} (run-in dir "" "server" "--port" "7888")]
+         (is (= 2 status))
+         (is (str/includes? err "--port doesn't go with shadow-cljs, which takes the port from shadow-cljs.edn")))
        (is (= 2 (:status (run-in dir "" "server" "--aliases" ":dev"))))))))
 
 (deftest doc-test
