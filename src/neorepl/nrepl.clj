@@ -161,9 +161,10 @@
      (or (some :new-session responses)
          (throw (ex-info "Couldn't create a session" {:session session :responses responses}))))))
 
-(defn close-session [client session]
-  (request client {:op "close" :session session})
-  nil)
+(defn close-session
+  "Closes session. Returns false when the server didn't know it."
+  [client session]
+  (not-any? #(status? % "unknown-session") (request client {:op "close" :session session})))
 
 (defn interrupt
   "Asks the server to interrupt the evaluation with message id in session, or

@@ -30,6 +30,12 @@
       ["--format=yaml"] "Invalid value for --format: yaml"
       ["--help=yes"] "--help takes no value")))
 
+(deftest columns-test
+  (is (= ["a    1" "bbb  22" "c"]
+         (cli/columns [["a" "1"] ["bbb" "22"] ["c" ""]])))
+  (is (= ["a" "b"] (cli/columns [["a" ""] ["b" ""]])))
+  (is (empty? (cli/columns []))))
+
 (deftest summary-test
   (is (= (str "  -p, --port PORT      The port\n"
               "      --format FORMAT  Output format\n"

@@ -45,10 +45,23 @@
                              positional)
                       {:error (str "Invalid value for " name ": " value)}))))))))
 
+(defn columns
+  "rows, vectors of strings, as lines with the strings lined up in columns."
+  [rows]
+  (when (seq rows)
+    (let [widths (apply map (fn [& cells] (apply max (map count cells))) rows)
+          pad #(str %2 (str/join (repeat (- %1 (count %2)) " ")))]
+      (for [row rows]
+        (str/trimr (str/join "  " (map pad widths row)))))))
+
+(defn indented-columns
+  "columns, indented and joined into one string, as in --help texts."
+  [rows]
+  (str/join "\n" (map #(str "  " %) (columns rows))))
+
 (defn summary
   "The options part of a --help text."
   [specs]
-  (let [lefts (for [{:keys [short long arg]} specs]
-                (str (if short (str short ", ") "    ") long (when arg (str " " arg))))
-        width (apply max (map count lefts))]
-    (str/join "\n" (map #(format (str "  %-" width "s  %s") %1 %2) lefts (map :doc specs)))))
+  (indented-columns (for [{:keys [short long arg doc]} specs]
+                      [(str (if short (str short ", ") "    ") long (when arg (str " " arg)))
+                       doc])))

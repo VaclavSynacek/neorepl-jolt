@@ -1,6 +1,7 @@
 (ns neorepl.main-test
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
+            [clojure.set :as set]
             [clojure.string :as str]
             [clojure.test :refer [are deftest is testing use-fixtures]]
             [neorepl.main :as main]
@@ -94,6 +95,27 @@
         (nrepl/close-session client lost)
         (is (= {:status 0 :out "2\n" :err ""} (run "-s" "lost" "2")))
         (is (not= lost (sessions/ensure! (sessions-file) client "lost")))))))
+
+(deftest sessions-command-test
+  (run "-s" "listed" "(in-ns 'neorepl.listed)")
+  (run "-s" "listed-too" "1")
+  (let [ids (with-client [client {:port *port*}]
+              (sessions/named (sessions-file) client))
+        listed #(set (edn/read-string (:out (run-command "sessions" "--format" "edn"))))]
+    (testing "listing"
+      (is (set/subset? #{{:name "listed" :id (ids "listed")} {:name "listed-too" :id (ids "listed-too")}}
+                       (listed)))
+      (let [{:keys [status out]} (run-command "sessions")]
+        (is (zero? status))
+        (is (re-find (re-pattern (str "(?m)^listed +" (ids "listed") "$")) out))))
+    (testing "closing"
+      (is (= {:status 0 :out "" :err ""} (run-command "sessions" "close" "listed")))
+      (is (not-any? #(= "listed" (:name %)) (listed)))
+      (testing "starts the name over"
+        (is (= "user" (:ns (edn/read-string (:out (run "-s" "listed" "--format" "edn" "1"))))))))
+    (testing "closing what isn't there"
+      (is (= {:status 1 :out "" :err "neorepl: No session called nope\n"}
+             (run-command "sessions" "close" "nope"))))))
 
 (deftest timeout-test
   (testing "an evaluation running too long gets interrupted"
@@ -252,6 +274,9 @@
       ["load" "-p" "1" "/does/not/exist.clj"] "No such file"
       ["load" "-f" "x.clj"] "Unknown option: -f"
       ["interrupt" "-p" "1" "now"] "Unexpected argument: now"
+      ["sessions" "-p" "1" "open"] "Unexpected argument: open"
+      ["sessions" "-p" "1" "close"] "Give the NAME of the session to close"
+      ["sessions" "-p" "1" "close" "a" "b"] "Unexpected argument: b"
       ["evil"] "Unknown command: evil"))
   (testing "usage errors point at the right help"
     (is (str/includes? (:err (run-in *dir* "" "load" "--bogus")) "Run neorepl load --help"))
@@ -270,4 +295,5 @@
     ["eval" "-h"] "--timeout SECS"
     [] "load "
     ["load" "--help"] "Usage: neorepl load"
-    ["interrupt" "--help"] "Usage: neorepl interrupt"))
+    ["interrupt" "--help"] "Usage: neorepl interrupt"
+    ["sessions" "--help"] "Usage: neorepl sessions"))

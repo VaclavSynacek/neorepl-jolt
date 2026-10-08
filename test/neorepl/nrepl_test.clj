@@ -94,8 +94,9 @@
         (let [doomed (nrepl/clone-session client)
               live-sessions #(set (some :sessions (nrepl/request client {:op "ls-sessions"})))]
           (is (contains? (live-sessions) doomed))
-          (nrepl/close-session client doomed)
+          (is (true? (nrepl/close-session client doomed)))
           (is (not (contains? (live-sessions) doomed)))
+          (is (false? (nrepl/close-session client doomed)))
           (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Couldn't create a session"
                                 (nrepl/clone-session client doomed)))))
       (testing "errors"

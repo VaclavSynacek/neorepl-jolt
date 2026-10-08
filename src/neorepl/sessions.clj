@@ -44,10 +44,23 @@
       (binding [*out* *err*]
         (println (str "neorepl: Couldn't save the session in " file ": " (ex-message e)))))))
 
-(defn- live? [client session]
-  ;; Servers without ls-sessions get the benefit of the doubt.
-  (or (not (contains? (:ops client) "ls-sessions"))
-      (contains? (set (some :sessions (nrepl/request client {:op "ls-sessions"}))) session)))
+(defn- live-sessions
+  "A predicate telling whether client's server knows a session id. Servers
+  without ls-sessions get the benefit of the doubt."
+  [client]
+  (if (contains? (:ops client) "ls-sessions")
+    (set (some :sessions (nrepl/request client {:op "ls-sessions"})))
+    any?))
+
+(defn named
+  "The sessions on client's server that have a name in file, as a sorted map
+  of names to ids. Sessions the server doesn't know anymore, typically
+  because it restarted, are left out."
+  [file client]
+  (let [live? (live-sessions client)]
+    (into (sorted-map)
+          (filter (comp live? val))
+          (get (read-cache file) (:address client)))))
 
 (defn- cached [file client name]
   (get-in (read-cache file) [(:address client) name]))
@@ -55,15 +68,13 @@
 (defn ensure!
   "The id of the session called name on client's server, as cached in file.
   Clones and caches a new one when there's none yet or the server doesn't
-  know the cached one anymore, typically because it restarted."
+  know the cached one anymore."
   [file client name]
-  (let [session (cached file client name)]
-    (if (and session (live? client session))
-      session
+  (or (get (named file client) name)
       (let [session (nrepl/clone-session client)]
         ;; Read again, to keep what other processes wrote in the meantime.
         (write-cache! file (assoc-in (read-cache file) [(:address client) name] session))
-        session))))
+        session)))
 
 (defn interrupt
   "Interrupts whatever runs in the session called name, returning how that
@@ -73,3 +84,12 @@
   (if-let [session (cached file client name)]
     (nrepl/interrupt client session nil)
     :unknown-session))
+
+(defn close!
+  "Closes the session called name on client's server and drops it from file.
+  Returns its id, or nil when there's no such session."
+  [file client name]
+  (when-let [session (cached file client name)]
+    (let [closed? (nrepl/close-session client session)]
+      (write-cache! file (update (read-cache file) (:address client) dissoc name))
+      (when closed? session))))

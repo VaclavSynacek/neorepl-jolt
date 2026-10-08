@@ -239,6 +239,9 @@ and the like carry over from one call to the next.")
     (some-> message warn)
     (emit format result)))
 
+(defn- no-session [name]
+  {:status "no-session" :message (str "No session called " name)})
+
 (defn- report-evaluation
   "Evaluates msg on the server options point at, in the session they name,
   prints the result in the format they ask for and returns the exit status."
@@ -356,28 +359,68 @@ interrupt, 2 on usage errors and 3 when there's no server to talk to."
             (case (sessions/interrupt sessions-file client session)
               :interrupted {:status "interrupted"}
               :idle {:status "idle" :message (str "Nothing is running in session " session)}
-              :unknown-session {:status "no-session" :message (str "No session called " session)}
+              :unknown-session (no-session session)
               {:status "error" :message "The server couldn't interrupt the evaluation"})]
         (report format result)
         (if (= "interrupted" status) 0 1)))))
+
+(def ^:private sessions-options
+  (concat connection-options common-options))
+
+(def ^:private sessions-help
+  (help-text
+   "Usage: neorepl sessions [options]
+       neorepl sessions [options] close NAME"
+   "Lists the named sessions on the server, or closes one. Closing a session
+throws its state away: the next evaluation under that name starts afresh in
+the user namespace."
+   sessions-options
+   discovery-note
+   "Exit status: 0 on success, 1 when there's no session to close, 2 on usage
+errors and 3 when there's no server to talk to."
+   "Examples:
+  neorepl sessions
+  neorepl sessions close agent"))
+
+(defn- sessions-command [{:keys [format] :as options} args {:keys [dir sessions-file]}]
+  (let [[action name & more] args]
+    (cond
+      (empty? args) nil
+      (not= "close" action) (throw (usage-error (str "Unexpected argument: " action)))
+      (nil? name) (throw (usage-error "Give the NAME of the session to close"))
+      (seq more) (throw (usage-error (str "Unexpected argument: " (first more)))))
+    (with-client options dir
+      (fn [client]
+        (if name
+          (let [{:keys [status] :as result}
+                (if (sessions/close! sessions-file client name)
+                  {:status "closed"}
+                  (no-session name))]
+            (report format result)
+            (if (= "closed" status) 0 1))
+          (let [named (sessions/named sessions-file client)]
+            (if (= "text" format)
+              (run! println (cli/columns named))
+              (emit format (for [[name id] named] {:name name :id id})))
+            0))))))
 
 (def ^:private commands
   [{:name "eval" :summary "Evaluate code" :options eval-options :help eval-help :main eval-command}
    {:name "load" :summary "Load a file" :options load-options :help load-help :main load-command}
    {:name "interrupt" :summary "Interrupt an evaluation" :options interrupt-options :help interrupt-help
-    :main interrupt-command}])
+    :main interrupt-command}
+   {:name "sessions" :summary "List or close sessions" :options sessions-options :help sessions-help
+    :main sessions-command}])
 
 (def ^:private help
-  (let [width (apply max (map (comp count :name) commands))]
-    (str "Usage: neorepl COMMAND [options]
+  (str "Usage: neorepl COMMAND [options]
 
 A terminal client for nREPL servers.
 
 Commands:
-" (str/join "\n" (for [{:keys [name summary]} commands]
-                   (format (str "  %-" width "s  %s") name summary))) "
+" (cli/indented-columns (map (juxt :name :summary) commands)) "
 
-Run neorepl COMMAND --help for its options.")))
+Run neorepl COMMAND --help for its options."))
 
 (defn- run-command [{:keys [options help main]} args ctx]
   (let [{:keys [error] :as parsed} (cli/parse options args)]

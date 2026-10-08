@@ -42,15 +42,25 @@
          (testing "other names get other sessions"
            (let [other (sessions/ensure! file client "other")]
              (is (not= session other))
-             (is (= other (sessions/ensure! file client "other")))))
+             (is (= other (sessions/ensure! file client "other")))
+             (is (= {"agent" session "other" other} (sessions/named file client)))
+             (testing "until they're closed"
+               (is (= other (sessions/close! file client "other")))
+               (is (= {"agent" session} (sessions/named file client)))
+               (is (nil? (sessions/close! file client "other"))))))
          (testing "interrupting by name"
            (is (= :idle (sessions/interrupt file client "agent")))
            (is (= :unknown-session (sessions/interrupt file client "nope"))))
          (testing "a session the server lost gets replaced"
            (nrepl/close-session client session)
            (is (= :unknown-session (sessions/interrupt file client "agent")))
+           (is (= {} (sessions/named file client)))
            (testing "unless the server can't tell us"
-             (is (= session (sessions/ensure! file (update client :ops disj "ls-sessions") "agent"))))
+             (let [no-ls (update client :ops disj "ls-sessions")]
+               (is (= session (sessions/ensure! file no-ls "agent")))
+               (testing "until it gets asked to close it"
+                 (is (nil? (sessions/close! file no-ls "agent")))
+                 (is (not (contains? (get (edn/read-string (slurp file)) (:address client)) "agent"))))))
            (let [fresh (sessions/ensure! file client "agent")]
              (is (not= session fresh))
              (is (= fresh (sessions/ensure! file client "agent")))))
