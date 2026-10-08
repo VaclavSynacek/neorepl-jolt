@@ -48,7 +48,7 @@
   (with-client [client {:port *port*}]
     (testing "describe info comes along"
       (is (every? (:ops client) ["eval" "clone" "interrupt" "completions" "lookup"]))
-      (is (contains? (:versions client) :nrepl)))
+      (is (re-matches #"\d+\.\d+.*" (:nrepl (:versions client)))))
     (testing "and the address it's connected to"
       (is (= (str "127.0.0.1:" *port*) (:address client))))
     (testing "op names keep their namespace"

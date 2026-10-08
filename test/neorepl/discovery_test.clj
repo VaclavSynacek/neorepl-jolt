@@ -31,7 +31,8 @@
        (when (empty? (discovery/find-ports dir))
          (let [e (is (thrown? clojure.lang.ExceptionInfo (discovery/connect dir)))]
            (is (= ::nrepl/no-server (:type (ex-data e))))
-           (is (re-find #"No nREPL port file" (ex-message e))))))
+           (is (re-find #"No nREPL port file" (ex-message e))))
+         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"No nREPL port file" (discovery/probe dir)))))
      (testing "stale port files are skipped"
        (spit-file dir ".nrepl-port" (str *port*))
        (spit-file dir "app/.nrepl-port" (str (test-server/free-port)))
@@ -40,6 +41,11 @@
            (is (= (str "127.0.0.1:" *port*) (:address client)))
            (finally
              (nrepl/close client)))))
+     (testing "probing tells the live from the stale"
+       (let [[stale live] (discovery/probe (io/file dir "app"))]
+         (is (= {:file (canonical dir "app/.nrepl-port") :live false} (dissoc stale :port)))
+         (is (= {:file (canonical dir ".nrepl-port") :port *port* :live true} (dissoc live :versions)))
+         (is (string? (:nrepl (:versions live))))))
      (testing "only stale port files"
        (spit-file dir ".nrepl-port" (str (test-server/free-port)))
        (let [e (is (thrown? clojure.lang.ExceptionInfo (discovery/connect (io/file dir "app"))))]

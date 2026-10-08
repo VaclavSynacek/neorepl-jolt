@@ -57,9 +57,12 @@
    {:short "-h" :long "--help"
     :doc "Show this help"}])
 
+(def ^:private port-file-names
+  (str "(" (str/join ", " discovery/port-files) ")"))
+
 (def ^:private discovery-note
-  "Without --port or --url it connects to the nearest server with a port file
-(.nrepl-port, .shadow-cljs/nrepl.port) in this directory or a parent.")
+  (str "Without --port or --url it connects to the nearest server with a port file
+" port-file-names " in this directory or a parent."))
 
 (def ^:private sessions-note
   "Evaluations share a session, per server and --session name, so *ns*, *1, *e
@@ -74,6 +77,10 @@ and the like carry over from one call to the next.")
   any paragraphs after them."
   [usage description options & more]
   (str/join "\n\n" (concat [usage description (str "Options:\n" (cli/summary options))] more)))
+
+(defn- reject-args [args]
+  (when (seq args)
+    (throw (usage-error (str "Unexpected argument: " (first args))))))
 
 (defn- existing-file ^File [path]
   (let [file (io/file path)]
@@ -351,8 +358,7 @@ interrupt, 2 on usage errors and 3 when there's no server to talk to."
   neorepl interrupt -s agent"))
 
 (defn- interrupt-command [{:keys [session format] :as options} args {:keys [dir sessions-file]}]
-  (when (seq args)
-    (throw (usage-error (str "Unexpected argument: " (first args)))))
+  (reject-args args)
   (with-client options dir
     (fn [client]
       (let [{:keys [status] :as result}
@@ -385,10 +391,9 @@ errors and 3 when there's no server to talk to."
 (defn- sessions-command [{:keys [format] :as options} args {:keys [dir sessions-file]}]
   (let [[action name & more] args]
     (cond
-      (empty? args) nil
-      (not= "close" action) (throw (usage-error (str "Unexpected argument: " action)))
+      (not= "close" action) (reject-args args)
       (nil? name) (throw (usage-error "Give the NAME of the session to close"))
-      (seq more) (throw (usage-error (str "Unexpected argument: " (first more)))))
+      :else (reject-args more))
     (with-client options dir
       (fn [client]
         (if name
@@ -404,13 +409,43 @@ errors and 3 when there's no server to talk to."
               (emit format (for [[name id] named] {:name name :id id})))
             0))))))
 
+(def ^:private ports-options common-options)
+
+(def ^:private ports-help
+  (help-text
+   "Usage: neorepl ports [options]"
+   (str "Lists the port files " port-file-names " in this
+directory and its parents, nearest first, and the servers answering on their
+ports. The other commands connect to the first server that answers.")
+   ports-options
+   "Exit status: 0 when a server answers, 2 on usage errors and 3 when none
+does."
+   "Examples:
+  neorepl ports
+  neorepl ports --format json"))
+
+(defn- ports-command [{:keys [format]} args {:keys [dir]}]
+  (reject-args args)
+  (let [ports (discovery/probe dir)]
+    (if (= "text" format)
+      (run! println (cli/columns (for [{:keys [file port live versions]} ports]
+                                   [file
+                                    (str port)
+                                    (if live
+                                      (str/join ", " (for [[k v] versions] (str (name k) " " v)))
+                                      "not answering")])))
+      (emit format ports))
+    (if (some :live ports) 0 3)))
+
 (def ^:private commands
   [{:name "eval" :summary "Evaluate code" :options eval-options :help eval-help :main eval-command}
    {:name "load" :summary "Load a file" :options load-options :help load-help :main load-command}
    {:name "interrupt" :summary "Interrupt an evaluation" :options interrupt-options :help interrupt-help
     :main interrupt-command}
    {:name "sessions" :summary "List or close sessions" :options sessions-options :help sessions-help
-    :main sessions-command}])
+    :main sessions-command}
+   {:name "ports" :summary "List the servers for this directory" :options ports-options :help ports-help
+    :main ports-command}])
 
 (def ^:private help
   (str "Usage: neorepl COMMAND [options]

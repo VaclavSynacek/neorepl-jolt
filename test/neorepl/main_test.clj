@@ -4,6 +4,7 @@
             [clojure.set :as set]
             [clojure.string :as str]
             [clojure.test :refer [are deftest is testing use-fixtures]]
+            [neorepl.discovery :as discovery]
             [neorepl.main :as main]
             [neorepl.nrepl :as nrepl]
             [neorepl.sessions :as sessions]
@@ -246,6 +247,32 @@
      (is (= {:status 0 :out "3\n" :err ""}
             (run-in (io/file dir "sub") "" "eval" "(+ 1 2)"))))))
 
+(deftest ports-test
+  (call-with-temp-dir
+   (fn [dir]
+     (testing "no port files"
+       ;; Unless a parent of the temp dir happens to have one.
+       (when (empty? (discovery/find-ports dir))
+         (let [{:keys [status err]} (run-in dir "" "ports")]
+           (is (= 3 status))
+           (is (str/includes? err "No nREPL port file")))))
+     (let [app (io/file dir "app")
+           stale (.getCanonicalPath (spit-file app ".nrepl-port" (str (test-server/free-port))))
+           live (.getCanonicalPath (spit-file dir ".nrepl-port" (str *port*)))]
+       (testing "nearest first, live or not"
+         (let [{:keys [status out]} (run-in app "" "ports")]
+           (is (zero? status))
+           (is (re-find (re-pattern (str "^\\Q" stale "\\E +\\d+ +not answering\n"
+                                         "\\Q" live "\\E +" *port* " +.*nrepl \\d")) out))))
+       (testing "structured"
+         (let [[s l] (edn/read-string (:out (run-in app "" "ports" "--format" "edn")))]
+           (is (= {:file stale :live false} (dissoc s :port)))
+           (is (= {:file live :port *port* :live true} (dissoc l :versions)))
+           (is (string? (get-in l [:versions :nrepl])))))
+       (testing "nothing answering"
+         (spit live (str (test-server/free-port)))
+         (is (= 3 (:status (run-in app "" "ports")))))))))
+
 (deftest errors-test
   (testing "usage errors"
     (are [args message] (let [{:keys [status out err]} (apply run-in *dir* "" args)]
@@ -277,6 +304,8 @@
       ["sessions" "-p" "1" "open"] "Unexpected argument: open"
       ["sessions" "-p" "1" "close"] "Give the NAME of the session to close"
       ["sessions" "-p" "1" "close" "a" "b"] "Unexpected argument: b"
+      ["ports" "here"] "Unexpected argument: here"
+      ["ports" "-p" "1"] "Unknown option: -p"
       ["evil"] "Unknown command: evil"))
   (testing "usage errors point at the right help"
     (is (str/includes? (:err (run-in *dir* "" "load" "--bogus")) "Run neorepl load --help"))
@@ -296,4 +325,5 @@
     [] "load "
     ["load" "--help"] "Usage: neorepl load"
     ["interrupt" "--help"] "Usage: neorepl interrupt"
-    ["sessions" "--help"] "Usage: neorepl sessions"))
+    ["sessions" "--help"] "Usage: neorepl sessions"
+    ["ports" "--help"] "Usage: neorepl ports"))

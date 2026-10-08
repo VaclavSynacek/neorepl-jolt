@@ -20,7 +20,8 @@ bbin install .
 ```
 
 `neorepl eval` evaluates code on the nREPL server whose `.nrepl-port` file is
-in the current directory or one of its parents:
+in the current directory or one of its parents (`neorepl ports` lists the
+ones it can see):
 
 ```shell
 neorepl eval '(+ 1 2)'

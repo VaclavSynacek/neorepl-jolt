@@ -129,8 +129,10 @@
   every response no request claims, :on-error every exception a response
   handler throws (by default it's printed to stderr).
 
-  The client carries the server's :ops (a set of op names) and :versions, as
-  reported by describe, and its :address (host:port or the socket path)."
+  The client carries what describe reports: the server's :ops, a set of op
+  names, and its :versions, a sorted map of names such as :clojure and
+  :nrepl to version strings. And its :address (host:port or the socket
+  path)."
   [{:keys [url on-unclaimed on-error]
     :or {on-unclaimed (fn [_])
          on-error #(binding [*out* *err*] (println "neorepl: response handler failed:" (str %)))}
@@ -147,7 +149,13 @@
                :address address
                ;; The transport turns op names into keywords: cider/info into :cider/info.
                :ops (set (map (comp str symbol) (keys ops)))
-               :versions versions))
+               ;; JVM nREPL describes each version as a map, babashka its own
+               ;; as a string.
+               :versions (into (sorted-map)
+                               (for [[k v] versions
+                                     :let [version (if (map? v) (:version-string v) v)]
+                                     :when version]
+                                 [k version]))))
       (catch Throwable e
         (close client)
         (throw (no-server e))))))
