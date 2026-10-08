@@ -55,7 +55,8 @@
   "The REPL's commands, the CIDER way: a comma, which Clojure reads as
   whitespace, then a name. Most are the lookups in neorepl.lookups."
   (concat lookups/all
-          [{:name "help" :help "List the commands"}
+          [{:name "edit" :arg "SYM" :help "Open where SYM is defined in your EDITOR"}
+           {:name "help" :help "List the commands"}
            {:name "quit" :help "Leave the REPL"}]))
 
 (defn- command [name]
@@ -83,13 +84,59 @@
     (and (:code-arg? (command name)) arg (lexer/incomplete? arg))
     (lexer/incomplete? input)))
 
+(defn- out [text]
+  {:out (str text "\n")})
+
+(def ^:private windows?
+  (str/starts-with? (System/getProperty "os.name") "Windows"))
+
+(defn- editor-command-line
+  "The command line that opens file at line with editor-command, a command
+  line like EDITOR's. It runs through the shell, the way git runs EDITOR, so
+  quotes in it work. The line goes in the way the editor takes it: +line
+  for vi, Emacs and most others."
+  [editor-command file line]
+  (let [[_ & words] (re-find #"^\s*(?:\"([^\"]*)\"|'([^']*)'|(\S+))" editor-command)
+        editor (some-> (some identity words) io/file .getName (str/replace #"(?i)\.(exe|cmd|bat)$" ""))
+        args (cond
+               (nil? line) [file]
+               (#{"code" "code-insiders" "codium" "cursor"} editor) ["-g" (str file ":" line)]
+               (#{"subl" "zed" "hx"} editor) [(str file ":" line)]
+               :else [(str "+" line) file])]
+    (if windows?
+      (concat (str/split (str/trim editor-command) #"\s+") args)
+      (concat ["sh" "-c" (str editor-command " \"$@\"") "sh"] args))))
+
+(defn- edit
+  "Opens the definition of sym with the :editor-command, with the terminal
+  :suspended for it. Returns what to print, as command-output does."
+  [{:keys [client ns editor-command suspended]} sym]
+  (let [{:keys [found none]} (lookups/run "where" client {:ns ns} sym)
+        {:keys [file line]} found]
+    (cond
+      none (out none)
+      (str/blank? editor-command) (out "Set EDITOR, or VISUAL, to the editor to open")
+      (not (.isFile (io/file file))) (out (str "Can't open " file))
+      :else (let [command (editor-command-line editor-command file line)
+                  status (suspended #(let [editor (-> (ProcessBuilder. ^java.util.List command) .inheritIO .start)]
+                                       (try
+                                         (.waitFor editor)
+                                         ;; Ctrl-C stops waiting, for an editor with a
+                                         ;; window of its own that doesn't take it.
+                                         (catch InterruptedException e
+                                           (.destroy editor)
+                                           (throw e)))))]
+              (if (zero? status)
+                {}
+                (out (str "The editor exited with status " status)))))))
+
 (defn- command-output
   "Runs the command called name with arg, and returns what to print, as a
   response for the REPL's printer, or :quit. state has the :client, the
-  :session and the :ns, for the lookups."
+  :session and the :ns, for the lookups, and the :editor-command and a
+  function to run it with the terminal :suspended, for ,edit."
   [{:keys [client] :as state} name arg]
-  (let [{arg-name :arg :keys [code?] :as command} (command name)
-        out #(hash-map :out (str % "\n"))]
+  (let [{arg-name :arg :keys [code?] :as command} (command name)]
     (cond
       (= "quit" name) :quit
       (= "help" name) (out (str/join "\n" (cli/columns (for [{:keys [name arg help]} commands]
@@ -97,11 +144,13 @@
       (nil? command) (out (str "No command called ," name ", ,help lists them"))
       (and arg-name (nil? arg)) (out (str "Usage: ," name " " arg-name))
       :else (try
-              (let [{:keys [text none]} (lookups/run name client state arg)]
-                (cond
-                  none (out none)
-                  code? {:value text}
-                  :else (out text)))
+              (if (= "edit" name)
+                (edit state arg)
+                (let [{:keys [text none]} (lookups/run name client state arg)]
+                  (cond
+                    none (out none)
+                    code? {:value text}
+                    :else (out text))))
               (catch InterruptedException _
                 (out "Interrupted"))
               (catch Exception e
@@ -113,14 +162,15 @@
 (defn- run-loop
   "Reads code with read-code, a function of the current namespace's name,
   and evaluates it in session until the input ends or says :repl/quit. Runs
-  commands too. Responses go to print-response, late ones and what commands
-  print too, and result messages to print-message.
+  commands too, which get io for what else they need. Responses go to
+  print-response, late ones and what commands print too, and result
+  messages to print-message.
 
   What an interrupted evaluation says from then on is left out, since it
   comes from it dying: an InterruptedException, or code carrying on after a
   read from *in* got cut short."
   [client session {:keys [running interrupted command-thread]}
-   {:keys [read-code read-line width print-response print-message]}]
+   {:keys [read-code read-line width print-response print-message] :as io}]
   (let [print-response #(let [stopped @interrupted]
                           (when-not (and stopped (= stopped (:id %)))
                             (print-response %)))
@@ -135,7 +185,7 @@
             output (when name
                      (reset! command-thread (Thread/currentThread))
                      (try
-                       (command-output {:client client :session session :ns ns} name arg)
+                       (command-output (assoc io :client client :session session :ns ns) name arg)
                        (finally
                          (reset! command-thread nil)
                          ;; In case Ctrl-C came after the command was done.
@@ -186,7 +236,7 @@
   "A REPL without a line editor, for when there's no terminal to edit on:
   pipes, Emacs' M-x shell and the like. Reads from *in* and prints prompts and
   results to *out*, the way clojure.main's REPL does."
-  [client session]
+  [client session editor-command]
   (let [{:keys [interrupt] :as interruptions} (interruptions client session)
         ;; With nothing to interrupt, Ctrl-C is for the REPL.
         previous (on-sigint #(when-not (interrupt) (System/exit 130)))]
@@ -199,7 +249,9 @@
                  :width (constantly 80)
                  :print-response (evaluation/text-printer)
                  :print-message #(binding [*out* *err*]
-                                   (println %))})
+                                   (println %))
+                 :editor-command editor-command
+                 :suspended #(%)})
       ;; Ends the line the last prompt is on.
       (newline)
       (finally
@@ -266,7 +318,7 @@
 (defn- interactive
   "The REPL with a line editor. in-ns gets called with the namespace the
   REPL's in at each prompt."
-  [client session editor in-ns]
+  [client session editor in-ns editor-command]
   (let [{:keys [interrupt] :as interruptions} (interruptions client session)]
     (editor/on-interrupt editor interrupt)
     (editor/print-text editor :notice (banner client))
@@ -282,7 +334,9 @@
                :width #(editor/width editor)
                :print-response (printer editor)
                :print-message #(do (editor/fresh-line editor)
-                                   (editor/print-text editor :notice (str % "\n")))})))
+                                   (editor/print-text editor :notice (str % "\n")))
+               :editor-command editor-command
+               :suspended #(editor/suspended editor %)})))
 
 (defn- history-file
   "The history for the project in dir: a file in history-dir named after a
@@ -298,8 +352,10 @@
 
     :terminal     options for editor/open, nil for the plain REPL regardless
     :history-dir  where to keep the history, per project
-    :dir          the project's directory when the client doesn't say"
-  [client session {:keys [terminal history-dir dir]}]
+    :dir          the project's directory when the client doesn't say
+    :editor-command
+                  the command line ,edit opens files with, like EDITOR's"
+  [client session {:keys [terminal history-dir dir editor-command]}]
   (let [{:keys [in-ns] :as lookups} (lookups client)]
     (if-let [editor (some-> terminal
                             (merge (select-keys lookups [:complete :eldoc :doc])
@@ -307,7 +363,7 @@
                                     :history-file (history-file history-dir (or (:project-dir client) dir))})
                             editor/open)]
       (try
-        (interactive client session editor in-ns)
+        (interactive client session editor in-ns editor-command)
         (finally
           (editor/close editor)))
-      (plain client session))))
+      (plain client session editor-command))))

@@ -316,6 +316,16 @@
   (is (= {:expansion "(if x (do y))"}
          (edn/read-string (:out (run-command "macroexpand" "--format" "edn" "(when x y)"))))))
 
+(deftest where-test
+  (let [{:keys [status out]} (run-command "where" "map")]
+    (is (zero? status))
+    (is (re-find #"core\.clj:\d+" out)))
+  (is (= 1 (:status (run-command "where" "nope"))))
+  (testing "nowhere for what was made at a REPL"
+    ;; In a session of its own: nREPL's keep the file loaded last as theirs.
+    (run "-s" "where-made" "(defn made-at-the-repl [])")
+    (is (= 1 (:status (run-command "where" "made-at-the-repl"))))))
+
 (deftest pst-test
   (run "-s" "pst" "(throw (ex-info \"boom\" {:k 1}))")
   (let [{:keys [status out]} (run-command "pst" "-s" "pst")]
@@ -346,11 +356,35 @@
                           "user=> 3\nuser=> \n")))
     (testing "an argument that isn't code ends with its line"
       (is (= "user=> clojure.core/mapcat\nuser=> 3\nuser=> \n" (repl ",apropos ^mapcat$\n(+ 1 2)\n"))))
+    (testing ",where"
+      (is (re-find #"^user=> \S*core\.clj:\d+" (repl ",where map\n"))))
     (testing "help, mistakes and quitting"
       (is (str/includes? (repl ",help\n") ",doc SYM"))
       (is (= "user=> Usage: ,doc SYM\nuser=> \n" (repl ",doc\n")))
       (is (= "user=> No command called ,nope, ,help lists them\nuser=> \n" (repl ",nope\n")))
       (is (= "user=> \n" (repl ",quit\n(+ 1 2)\n"))))))
+
+(deftest edit-test
+  ;; The editors are shell scripts.
+  (when-not (test-server/windows?)
+    (let [file (spit-file *dir* "src/edit/demo.clj" "(ns edit.demo)\n\n(defn f [] 1)\n")
+          edited (io/file *dir* "edited")
+          editor (fn [path]
+                   (doto (spit-file *dir* path (str "#!/bin/sh\necho \"$@\" > '" edited "'\n"))
+                     (.setExecutable true)))
+          edit #(with-out-str
+                  (with-in-str ",edit edit.demo/f\n"
+                    (main/run ["repl" "-p" (str *port*)]
+                              {:dir *dir* :sessions-file (sessions-file) :editor-command %})))]
+      (run-command "load" (str file))
+      (testing "at the line, the way vi and Emacs take it"
+        (edit (str "'" (editor "an editor/vi") "' -f"))
+        (is (= (str "-f +3 " (.getAbsolutePath file) "\n") (slurp edited))))
+      (testing "or the way VS Code does"
+        (edit (str (editor "bin/code") " -w"))
+        (is (= (str "-w -g " (.getAbsolutePath file) ":3\n") (slurp edited))))
+      (testing "with an editor that fails"
+        (is (= "user=> The editor exited with status 1\nuser=> \n" (edit "false")))))))
 
 (deftest discovery-test
   (call-with-temp-dir
@@ -483,4 +517,5 @@
     ["complete" "--help"] "Usage: neorepl complete"
     ["apropos" "--help"] "Usage: neorepl apropos"
     ["macroexpand" "--help"] "Usage: neorepl macroexpand"
-    ["pst" "--help"] "Usage: neorepl pst"))
+    ["pst" "--help"] "Usage: neorepl pst"
+    ["where" "--help"] "Usage: neorepl where"))

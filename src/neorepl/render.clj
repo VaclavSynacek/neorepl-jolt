@@ -47,3 +47,10 @@
                                      :when (not-any? #{"tooling" "dup"} flags)]
                                  (frame-text frame)))]
               line)))
+
+(defn location-text
+  "Where something is, its :file, :line and :column, the way compilers and
+  editors write it: file:line:column."
+  [{:keys [file line column]}]
+  (str/join ":" (remove nil? [file line column])))
+

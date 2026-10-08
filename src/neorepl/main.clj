@@ -10,6 +10,7 @@
             [neorepl.lexer :as lexer]
             [neorepl.lookups :as lookups]
             [neorepl.nrepl :as nrepl]
+            [neorepl.render :as render]
             [neorepl.sessions :as sessions]
             [neorepl.xdg :as xdg])
   (:import (java.io File IOException)))
@@ -382,9 +383,9 @@ can't be read and 2 on usage errors."
 (defn- check-command [{:keys [format]} args _]
   (when (empty? args)
     (throw (usage-error "Nothing to check")))
-  (let [problems (reduce (fn [problems {:keys [file line column message] :as problem}]
+  (let [problems (reduce (fn [problems {:keys [message] :as problem}]
                            (when (= "text" format)
-                             (println (str (str/join ":" (remove nil? [file line column])) ": " message)))
+                             (println (str (render/location-text problem) ": " message)))
                            (conj problems problem))
                          []
                          ;; Lexed in parallel, reported in order.
@@ -435,10 +436,14 @@ when there's no server to talk to."
       (do (report format {:status "not-found" :message none})
           1))))
 
-(defn- doc-command [{:keys [ns format] :as options} args {:keys [dir]}]
-  (let [sym (the-arg args "SYM")]
-    (with-client options dir
-      #(report-lookup format "doc" % {:ns ns} sym))))
+(defn- lookup-command
+  "The command doing the lookup called name on its one argument."
+  [name]
+  (let [arg-name (:arg (lookups/lookup name))]
+    (fn [{:keys [ns format] :as options} args {:keys [dir]}]
+      (let [arg (the-arg args arg-name)]
+        (with-client options dir
+          #(report-lookup format name % {:ns ns} arg))))))
 
 (def ^:private source-help
   (help-text
@@ -451,11 +456,6 @@ and 3 when there's no server to talk to."
    "Examples:
   neorepl source when
   neorepl source --ns my.app my.app/start"))
-
-(defn- source-command [{:keys [ns format] :as options} args {:keys [dir]}]
-  (let [sym (the-arg args "SYM")]
-    (with-client options dir
-      #(report-lookup format "source" % {:ns ns} sym))))
 
 (def ^:private complete-help
   (help-text
@@ -490,11 +490,6 @@ errors and 3 when there's no server to talk to."
   neorepl apropos split
   neorepl apropos --format json '^map'"))
 
-(defn- apropos-command [{:keys [format] :as options} args {:keys [dir]}]
-  (let [regex (the-arg args "REGEX")]
-    (with-client options dir
-      #(report-lookup format "apropos" % {} regex))))
-
 (def ^:private macroexpand-options
   (concat connection-options
           [(assoc ns-option :doc "Expand in the namespace NS (default: user)")
@@ -517,6 +512,19 @@ errors and 3 when there's no server to talk to."
   (let [form (the-arg args "FORM")]
     (with-client options dir
       #(report-lookup format (if all "macroexpand-all" "macroexpand") % {:ns ns} form))))
+
+(def ^:private where-help
+  (help-text
+   "Usage: neorepl where [options] SYM"
+   "Prints where SYM is defined, as file:line:column, the way compilers and
+editors write locations. A definition in a jar comes as a jar: URL."
+   lookup-options
+   discovery-note
+   "Exit status: 0 when the server knows where SYM is, 1 when it doesn't, 2 on
+usage errors and 3 when there's no server to talk to."
+   "Examples:
+  neorepl where map
+  neorepl where --ns my.app --format json start"))
 
 (def ^:private pst-options
   (concat connection-options [session-option] common-options))
@@ -591,7 +599,7 @@ server to talk to or the connection to it drops."
             start (requiring-resolve 'neorepl.repl/start)]
         (.addShutdownHook runtime hook)
         (try
-          (start client id (select-keys ctx [:dir :history-dir :terminal]))
+          (start client id (select-keys ctx [:dir :history-dir :terminal :editor-command]))
           0
           (finally
             (.removeShutdownHook runtime hook)
@@ -603,15 +611,17 @@ server to talk to or the connection to it drops."
    {:name "eval" :summary "Evaluate code" :options eval-options :help eval-help :main eval-command}
    {:name "load" :summary "Load a file" :options load-options :help load-help :main load-command}
    {:name "doc" :summary "Show a var's documentation" :options lookup-options :help doc-help
-    :main doc-command}
+    :main (lookup-command "doc")}
    {:name "source" :summary "Show a var's source" :options lookup-options :help source-help
-    :main source-command}
+    :main (lookup-command "source")}
    {:name "complete" :summary "List completions" :options lookup-options :help complete-help
     :main complete-command}
    {:name "apropos" :summary "Find vars by name" :options apropos-options :help apropos-help
-    :main apropos-command}
+    :main (lookup-command "apropos")}
    {:name "macroexpand" :summary "Expand macros" :options macroexpand-options :help macroexpand-help
     :main macroexpand-command}
+   {:name "where" :summary "Show where a var is defined" :options lookup-options :help where-help
+    :main (lookup-command "where")}
    {:name "pst" :summary "Print the last error's stack trace" :options pst-options :help pst-help
     :main pst-command}
    {:name "interrupt" :summary "Interrupt an evaluation" :options interrupt-options :help interrupt-help
@@ -643,8 +653,8 @@ Run neorepl COMMAND --help for its options."))
 (defn run
   "Runs the neorepl command line args and returns the exit status. ctx has
   the :dir to look for port files in, the :sessions-file, the REPL's
-  :history-dir and the :terminal options for its line editor. Without those,
-  the REPL is the plain kind."
+  :history-dir, the :terminal options for its line editor, without which the
+  REPL is the plain kind, and the :editor-command ,edit uses."
   [args ctx]
   (let [[command & more] args
         ;; Without a command, it's the REPL, options and all.
@@ -671,6 +681,7 @@ Run neorepl COMMAND --help for its options."))
                           :sessions-file (io/file (xdg/cache-home) "neorepl" "sessions.edn")
                           :history-dir (io/file (xdg/state-home) "neorepl" "history")
                           ;; See https://no-color.org.
-                          :terminal {:color? (str/blank? (System/getenv "NO_COLOR"))}})]
+                          :terminal {:color? (str/blank? (System/getenv "NO_COLOR"))}
+                          :editor-command (some #(not-empty (System/getenv %)) ["VISUAL" "EDITOR"])})]
     (flush)
     (System/exit status)))

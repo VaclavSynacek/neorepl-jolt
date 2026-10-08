@@ -33,6 +33,13 @@
     :find (fn [client {:keys [ns]} form] {:expansion (features/expand client form ns true)})
     :text :expansion
     :code? true}
+   {:name "where" :arg "SYM" :help "Show where SYM is defined"
+    :find (fn [client {:keys [ns]} sym]
+            (let [{:keys [file] :as info} (features/info client sym ns)]
+              (when file
+                (select-keys info [:file :line :column]))))
+    :text render/location-text
+    :none (fn [{:keys [ns]} sym] (str "Nowhere to find " sym " in " ns))}
    {:name "pst" :help "Show the stack trace of the last error"
     :find (fn [client {:keys [session]} _] (features/last-error client session))
     :text render/error-text

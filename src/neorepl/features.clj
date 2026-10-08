@@ -61,22 +61,35 @@
     form
     (str "[" (str/join " " (map form-text form)) "]")))
 
+(defn- source-file
+  "Where a server says a definition is, as a path when that's a file on this
+  machine, nil when it came from a REPL rather than a file, and as it is
+  otherwise, like a jar: URL for a file in a jar."
+  [file]
+  (cond
+    (or (str/blank? file) (str/ends-with? file "NO_SOURCE_PATH")) nil
+    (str/starts-with? file "file:") (str (java.io.File. (java.net.URI. file)))
+    :else file))
+
 (defn- normalize-info
-  "info and lookup responses in one shape: :ns, :name, :doc, :file, :line,
-  :column, :arglists and a special form's :forms as vectors of strings, and
-  :macro and :special-form."
-  [{:keys [arglists-str forms forms-str macro special-form] :as info}]
-  (cond-> (select-keys info [:ns :name :doc :file :line :column])
-    (seq (arglists arglists-str)) (assoc :arglists (arglists arglists-str))
-    (truthy macro) (assoc :macro true)
-    (truthy special-form) (assoc :special-form true)
-    (seq forms) (assoc :forms (mapv #(if (string? %) % (str "(" (str/join " " (map form-text %)) ")")) forms))
-    forms-str (assoc :forms (str/split-lines forms-str))))
+  "info and lookup responses in one shape: :ns, :name, :doc, where it is as
+  the :file, :line and :column, :arglists and a special form's :forms as
+  vectors of strings, and :macro and :special-form."
+  [{:keys [file arglists-str forms forms-str macro special-form] :as info}]
+  (let [file (source-file file)]
+    (cond-> (select-keys info [:ns :name :doc])
+      file (merge {:file file} (select-keys info [:line :column]))
+      (seq (arglists arglists-str)) (assoc :arglists (arglists arglists-str))
+      (truthy macro) (assoc :macro true)
+      (truthy special-form) (assoc :special-form true)
+      (seq forms) (assoc :forms (mapv #(if (string? %) % (str "(" (str/join " " (map form-text %)) ")")) forms))
+      forms-str (assoc :forms (str/split-lines forms-str)))))
 
 (defn info
   "What the server knows about sym, a symbol's text, as seen from the
   namespace ns: a map with its :ns and :name, :arglists, :doc and where it
-  is, :file, :line and :column. Nil when sym means nothing there."
+  is, :file, :line and :column, when it's in a file. Nil when sym means
+  nothing there."
   ([client sym ns] (info client sym ns {}))
   ([client sym ns opts]
    (cond

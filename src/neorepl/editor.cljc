@@ -223,6 +223,7 @@
                         :raw? raw?
                         :styles styles
                         :lock (Object.)
+                        :suspended? (atom false)
                         ;; What's been printed of the line the cursor's on.
                         :line (atom "")
                         :above (atom (AttributedString. ""))}]
@@ -241,6 +242,19 @@
 
 (defn close [{:keys [^Terminal terminal]}]
   (.close terminal))
+
+(defn suspended
+  "Calls f with the terminal let go of, for another program to have it, like
+  an editor, and takes it back after. Output waits till then."
+  [{:keys [^Terminal terminal lock suspended?]} f]
+  (locking lock
+    (reset! suspended? true)
+    (.pause terminal true)
+    (try
+      (f)
+      (finally
+        (.resume terminal)
+        (reset! suspended? false)))))
 
 (defn width
   "The terminal's width in columns."
@@ -291,11 +305,15 @@
 
 (defn on-interrupt
   "Calls f on Ctrl-C, unless a line is being read: then Ctrl-C clears it."
-  [{:keys [^Terminal terminal] :as editor} f]
+  [{:keys [^Terminal terminal suspended?] :as editor} f]
   (.handle terminal Terminal$Signal/INT (reify Terminal$SignalHandler
                                           (handle [_ _]
                                             ;; Ends the line the terminal echoed ^C on.
-                                            (print-text editor nil "\n")
+                                            (if @suspended?
+                                              ;; The program that has the terminal has the lock
+                                              ;; too, but isn't using it, or the ^C would be its own.
+                                              (doto (.writer terminal) (.write "\n") (.flush))
+                                              (print-text editor nil "\n"))
                                             (f)))))
 
 (defn- read-with

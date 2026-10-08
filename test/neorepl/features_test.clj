@@ -1,5 +1,6 @@
 (ns neorepl.features-test
-  (:require [clojure.string :as str]
+  (:require [clojure.java.io :as io]
+            [clojure.string :as str]
             [clojure.test :refer [are deftest is testing use-fixtures]]
             [neorepl.features :as features]
             [neorepl.nrepl :as nrepl]
@@ -18,7 +19,12 @@
     (case op
       "info" (case sym
                "map" (transport/respond-to msg :status "done" :ns "clojure.core" :name "map"
-                                           :arglists-str "[f]\n[f coll]" :doc "Cider's map." :line 1)
+                                           :arglists-str "[f]\n[f coll]" :doc "Cider's map."
+                                           :file "file:/tmp/a%20b/core.clj" :line 1)
+               "mapv" (transport/respond-to msg :status "done" :ns "clojure.core" :name "mapv"
+                                            :file "jar:file:/x.jar!/clojure/core.clj" :line 2)
+               "made-at-the-repl" (transport/respond-to msg :status "done" :ns "user" :name "made-at-the-repl"
+                                                        :file "NO_SOURCE_PATH" :line 1)
                "if" (transport/respond-to msg :status "done" :name "if" :special-form "true"
                                           :forms-str "(if test then else?)")
                "broken" (transport/respond-to msg :status ["done" "info-error"])
@@ -60,6 +66,10 @@
           (is (:macro (features/info client "when" "user"))))
         (testing "nothing there"
           (is (nil? (features/info client "no-such-thing" "user"))))
+        (testing "nowhere for what was made at a REPL"
+          (nrepl/request client {:op "eval" :ns "user" :code "(defn made-at-the-repl [])"})
+          (is (= {:ns "user" :name "made-at-the-repl"}
+                 (select-keys (features/info client "made-at-the-repl" "user") [:ns :name :file :line]))))
         (testing "symbols are only ever symbols"
           (is (nil? (features/info client "(System/exit 1)" "user"))))))
     (testing "special forms"
@@ -133,8 +143,12 @@
     (try
       (with-client [client {:port (:port srv)}]
         (testing "cider-nrepl's ops come first"
-          (is (= {:ns "clojure.core" :name "map" :arglists ["[f]" "[f coll]"] :doc "Cider's map." :line 1}
+          (is (= {:ns "clojure.core" :name "map" :arglists ["[f]" "[f coll]"] :doc "Cider's map."
+                  :file (str (io/file "/tmp/a b/core.clj")) :line 1}
                  (features/info client "map" "user")))
+          (testing "with files in jars as they are, and none for what was made at a REPL"
+            (is (= "jar:file:/x.jar!/clojure/core.clj" (:file (features/info client "mapv" "user"))))
+            (is (= {:ns "user" :name "made-at-the-repl"} (features/info client "made-at-the-repl" "user"))))
           (is (= {:name "if" :special-form true :forms ["(if test then else?)"]}
                  (features/info client "if" "user")))
           (is (nil? (features/info client "no-such-thing" "user")))

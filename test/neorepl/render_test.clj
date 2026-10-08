@@ -24,6 +24,12 @@
          (render/apropos-text [{:name "clojure.core/map" :doc "Returns a lazy sequence\nmore"}
                                {:name "clojure.core/mapcat"}]))))
 
+(deftest location-text-test
+  (are [location text] (= text (render/location-text location))
+    {:file "/x.clj" :line 3 :column 1} "/x.clj:3:1"
+    {:file "/x.clj" :line 3} "/x.clj:3"
+    {:file "/x.clj"} "/x.clj"))
+
 (deftest error-text-test
   (is (= (str "clojure.lang.ExceptionInfo: boom\n"
               "  {:k 1,\n"

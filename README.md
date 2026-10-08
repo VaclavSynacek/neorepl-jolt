@@ -27,8 +27,8 @@ highlighted, values get pretty printed and the history is kept per project.
 TAB completes, the arglists of the function you're calling show up after
 the cursor and C-x C-d shows the documentation of what's at the cursor.
 Commands start with a comma, the CIDER way: `,doc`, `,source`, `,apropos`,
-`,macroexpand`, `,pst` for the last error's stack trace, and `,help` for
-the rest.
+`,macroexpand`, `,pst` for the last error's stack trace, `,edit` to open a
+definition in your `$EDITOR`, and `,help` for the rest.
 Without a terminal, say in a pipe or Emacs' `M-x shell`, it works like
 `clojure.main`'s REPL instead.
 
@@ -53,9 +53,9 @@ neorepl load src/my/app.clj
 ```
 
 `neorepl doc`, `neorepl source`, `neorepl apropos` and `neorepl pst` do what
-their `clojure.repl` namesakes do, `neorepl macroexpand` expands macros and
-`neorepl complete` lists completions, all using cider-nrepl when the server
-has it:
+their `clojure.repl` namesakes do, `neorepl macroexpand` expands macros,
+`neorepl complete` lists completions and `neorepl where` says where
+something's defined, all using cider-nrepl when the server has it:
 
 ```shell
 neorepl doc map
