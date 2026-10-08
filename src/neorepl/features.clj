@@ -247,3 +247,33 @@
              :data (blank->nil data)
              :stacktrace (dups (mapv #(select-keys % [:name :file :line :flags]) stacktrace))}))
     not-empty)))
+
+(defn reload
+  "Reloads code and returns {:reloaded [the namespaces]}, and the :output
+  loading them printed, like reflection warnings, if any. With nses, a seq
+  of namespace names, those namespaces get reloaded. Without, the ones that
+  changed since the last reload, which takes cider-nrepl's refresh. A big
+  project takes a while, so it waits as long as that takes unless opts have
+  a :timeout-ms."
+  ([client nses] (reload client nses {}))
+  ([client nses opts]
+   (let [opts (merge {:timeout-ms nil} opts)
+         [reloaded responses]
+         (cond
+           (seq nses)
+           [(vec nses)
+            (ask client {:op "eval"
+                         :ns "user"
+                         :code (format "(apply require (concat (map symbol %s) [:reload]))" (pr-str (vec nses)))}
+                 opts)]
+
+           (supports? client "refresh")
+           (let [responses (ask client {:op "refresh"} opts)]
+             [(vec (some :reloading responses)) responses])
+
+           :else
+           (throw (ex-info "Reloading what changed takes cider-nrepl on the server; name the namespaces to reload"
+                           {:type ::failed})))
+         output (str/join (keep #(or (:out %) (:err %)) responses))]
+     (cond-> {:reloaded reloaded}
+       (seq output) (assoc :output output)))))

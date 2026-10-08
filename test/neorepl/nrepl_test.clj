@@ -117,7 +117,10 @@
           (is (string? (:id (ex-data e)))))
         (testing "and its late responses are dropped rather than unclaimed"
           (is (= ["1"] (values (eval-in client session "1"))))
-          (is (empty? @unclaimed)))))))
+          (is (empty? @unclaimed)))
+        (testing "nil waits as long as it takes"
+          (is (= [":slow"] (values (nrepl/request client {:op "eval" :session session :code "(do (Thread/sleep 200) :slow)"}
+                                                  {:timeout-ms nil})))))))))
 
 (deftest send!-test
   (let [unclaimed (promise)]

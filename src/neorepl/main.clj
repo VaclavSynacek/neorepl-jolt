@@ -526,6 +526,28 @@ usage errors and 3 when there's no server to talk to."
   neorepl where map
   neorepl where --ns my.app --format json start"))
 
+(def ^:private reload-options
+  (concat connection-options common-options))
+
+(def ^:private reload-help
+  (help-text
+   "Usage: neorepl reload [options] [NS...]"
+   "Reloads the namespaces NS. Without any, it reloads the ones that changed
+since the last reload, which takes cider-nrepl on the server. Either way it
+waits for as long as reloading takes, and shows what loading the code
+printed, like reflection warnings."
+   reload-options
+   discovery-note
+   "Exit status: 0 when the code reloaded, 1 when that failed, 2 on usage errors
+and 3 when there's no server to talk to."
+   "Examples:
+  neorepl reload
+  neorepl reload my.app my.app.db"))
+
+(defn- reload-command [{:keys [format] :as options} args {:keys [dir]}]
+  (with-client options dir
+    #(report-lookup format "reload" % {} args)))
+
 (def ^:private pst-options
   (concat connection-options [session-option] common-options))
 
@@ -622,6 +644,8 @@ server to talk to or the connection to it drops."
     :main macroexpand-command}
    {:name "where" :summary "Show where a var is defined" :options lookup-options :help where-help
     :main (lookup-command "where")}
+   {:name "reload" :summary "Reload code" :options reload-options :help reload-help
+    :main reload-command}
    {:name "pst" :summary "Print the last error's stack trace" :options pst-options :help pst-help
     :main pst-command}
    {:name "interrupt" :summary "Interrupt an evaluation" :options interrupt-options :help interrupt-help

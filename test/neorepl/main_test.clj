@@ -326,6 +326,16 @@
     (run "-s" "where-made" "(defn made-at-the-repl [])")
     (is (= 1 (:status (run-command "where" "made-at-the-repl"))))))
 
+(deftest reload-test
+  (is (= {:status 0 :out "Reloaded clojure.set\n" :err ""} (run-command "reload" "clojure.set")))
+  (let [{:keys [status err]} (run-command "reload" "no.such.ns")]
+    (is (= 1 status))
+    (is (str/includes? err "Could not locate no/such/ns")))
+  (testing "what changed takes cider-nrepl"
+    (let [{:keys [status err]} (run-command "reload")]
+      (is (= 1 status))
+      (is (str/includes? err "takes cider-nrepl")))))
+
 (deftest pst-test
   (run "-s" "pst" "(throw (ex-info \"boom\" {:k 1}))")
   (let [{:keys [status out]} (run-command "pst" "-s" "pst")]
@@ -356,8 +366,16 @@
                           "user=> 3\nuser=> \n")))
     (testing "an argument that isn't code ends with its line"
       (is (= "user=> clojure.core/mapcat\nuser=> 3\nuser=> \n" (repl ",apropos ^mapcat$\n(+ 1 2)\n"))))
-    (testing ",where"
-      (is (re-find #"^user=> \S*core\.clj:\d+" (repl ",where map\n"))))
+    (testing ",where and ,reload"
+      (is (re-find #"^user=> \S*core\.clj:\d+" (repl ",where map\n")))
+      (is (= "user=> Reloaded clojure.set\nuser=> \n" (repl ",reload clojure.set\n")))
+      (testing "which leaves the REPL in the namespace it was in, even when that's made anew"
+        (is (= "user=> nil\nrepl.anew=> nil\nrepl.anew=> Reloaded clojure.set\nrepl.anew=> true\nrepl.anew=> \n"
+               ;; in-ns refers nothing to the namespace it makes on the JVM.
+               (repl (str "(do (in-ns 'repl.anew) nil)\n"
+                          "(do (clojure.core/remove-ns 'repl.anew) (clojure.core/create-ns 'repl.anew) nil)\n"
+                          ",reload clojure.set\n"
+                          "(clojure.core/identical? clojure.core/*ns* (clojure.core/find-ns 'repl.anew))\n"))))))
     (testing "help, mistakes and quitting"
       (is (str/includes? (repl ",help\n") ",doc SYM"))
       (is (= "user=> Usage: ,doc SYM\nuser=> \n" (repl ",doc\n")))
@@ -518,4 +536,5 @@
     ["apropos" "--help"] "Usage: neorepl apropos"
     ["macroexpand" "--help"] "Usage: neorepl macroexpand"
     ["pst" "--help"] "Usage: neorepl pst"
-    ["where" "--help"] "Usage: neorepl where"))
+    ["where" "--help"] "Usage: neorepl where"
+    ["reload" "--help"] "Usage: neorepl reload"))

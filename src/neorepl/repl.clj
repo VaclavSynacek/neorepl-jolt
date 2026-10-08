@@ -130,23 +130,34 @@
                 {}
                 (out (str "The editor exited with status " status)))))))
 
+(defn- reenter
+  "Puts session back in the namespace called ns, as tools.namespace's refresh
+  does: reloading code can make a namespace anew, and the session would go
+  on in the old one."
+  [client session ns]
+  ;; Qualified, since the namespace it's in might not refer clojure.core.
+  (nrepl/request client {:op "eval" :session session
+                         :code (format "(clojure.core/in-ns (clojure.core/symbol %s))" (pr-str ns))}))
+
 (defn- command-output
   "Runs the command called name with arg, and returns what to print, as a
   response for the REPL's printer, or :quit. state has the :client, the
   :session and the :ns, for the lookups, and the :editor-command and a
   function to run it with the terminal :suspended, for ,edit."
   [{:keys [client] :as state} name arg]
-  (let [{arg-name :arg :keys [code?] :as command} (command name)]
+  (let [{arg-name :arg :keys [code? args? optional?] :as command} (command name)]
     (cond
       (= "quit" name) :quit
       (= "help" name) (out (str/join "\n" (cli/columns (for [{:keys [name arg help]} commands]
                                                          [(str "," name (some->> arg (str " "))) help]))))
       (nil? command) (out (str "No command called ," name ", ,help lists them"))
-      (and arg-name (nil? arg)) (out (str "Usage: ," name " " arg-name))
+      (and arg-name (nil? arg) (not optional?)) (out (str "Usage: ," name " " arg-name))
       :else (try
               (if (= "edit" name)
                 (edit state arg)
-                (let [{:keys [text none]} (lookups/run name client state arg)]
+                (let [{:keys [text none]} (lookups/run name client state (if args? (some-> arg (str/split #"\s+")) arg))]
+                  (when (= "reload" name)
+                    (reenter client (:session state) (:ns state)))
                   (cond
                     none (out none)
                     code? {:value text}

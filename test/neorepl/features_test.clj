@@ -11,6 +11,8 @@
 
 (use-fixtures :once (test-server/fixture))
 
+(def ^:private refresh-fails? (atom false))
+
 (defn- wrap-fake-cider
   "Answers info, complete and apropos the way cider-nrepl does, with canned
   results, to tell its rung of the ladder from the others."
@@ -35,6 +37,15 @@
                                       :apropos-matches [{:name "clojure.core/map" :type "function"
                                                          :doc "Cider's map.\nMore."}])
       "macroexpand" (transport/respond-to msg :status "done" :expansion (str "Cider's " (:expander msg)))
+      "refresh" (if @refresh-fails?
+                  ;; cider-nrepl prints the error, as the REPL would.
+                  (do (transport/respond-to msg :reloading ["broken.ns"])
+                      (transport/respond-to msg :err "Syntax error compiling at (broken/ns.clj:1:1).\n")
+                      (transport/respond-to msg :status "error" :error-ns "broken.ns")
+                      (transport/respond-to msg :status "done"))
+                  (do (transport/respond-to msg :reloading ["changed.ns"])
+                      (transport/respond-to msg :err "Reflection warning, changed/ns.clj:3:1\n")
+                      (transport/respond-to msg :status ["ok" "done"])))
       "analyze-last-stacktrace" (do (transport/respond-to msg :class "clojure.lang.ExceptionInfo" :message "boom"
                                                           :data "{:k 1}" :phase "execution"
                                                           :stacktrace [{:name "user/f" :file "x.clj" :line 1
@@ -45,7 +56,8 @@
       (handler msg))))
 
 (middleware/set-descriptor! #'wrap-fake-cider {:handles {"info" {} "complete" {} "apropos" {}
-                                                         "macroexpand" {} "analyze-last-stacktrace" {}}})
+                                                         "macroexpand" {} "analyze-last-stacktrace" {}
+                                                         "refresh" {}}})
 
 (defn- without
   "client, pretending its server doesn't have ops."
@@ -131,12 +143,20 @@
       (testing "leaves the session's *1 alone"
         (is (= ["#'user/boom"] (keep :value (nrepl/request client {:op "eval" :session session :code "*1"}))))))))
 
+(deftest reload-test
+  (with-client [client {:port *port*}]
+    (testing "the namespaces given"
+      (is (= {:reloaded ["clojure.set"]} (features/reload client ["clojure.set"]))))
+    (testing "what changed, which takes cider-nrepl"
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"takes cider-nrepl" (features/reload client []))))))
+
 (deftest error-test
   (with-client [client {:port *port*}]
     (testing "errors aren't the same as finding nothing"
       (are [f] (= ::features/failed (:type (ex-data (is (thrown? clojure.lang.ExceptionInfo (f client))))))
         #(features/source % "map" "no.such.ns")
-        #(features/apropos % "(")))))
+        #(features/apropos % "(")
+        #(features/reload % ["no.such.ns"])))))
 
 (deftest cider-test
   (let [srv (server/start-server :port 0 :handler (server/default-handler #'wrap-fake-cider))]
@@ -159,6 +179,14 @@
           (is (= [{:name "clojure.core/map" :type "function" :doc "Cider's map.\nMore."}]
                  (features/apropos client "map")))
           (is (= "Cider's macroexpand-all" (features/expand client "(when x y)" "user" true)))
+          (is (= {:reloaded ["changed.ns"] :output "Reflection warning, changed/ns.clj:3:1\n"}
+                 (features/reload client [])))
+          (reset! refresh-fails? true)
+          (try
+            (is (thrown-with-msg? clojure.lang.ExceptionInfo #"refresh: Syntax error compiling at \(broken/ns\.clj"
+                                  (features/reload client [])))
+            (finally
+              (reset! refresh-fails? false)))
           (is (= [{:class "clojure.lang.ExceptionInfo" :message "boom" :data "{:k 1}"
                    :stacktrace [{:name "user/f" :file "x.clj" :line 1}]}
                   ;; cider-nrepl sends nil as an empty list.

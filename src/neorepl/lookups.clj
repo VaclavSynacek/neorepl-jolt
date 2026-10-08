@@ -2,15 +2,17 @@
   "The lookups neorepl's commands and the REPL's have in common, so both
   work and read the same: what each takes, how it finds its answer, how that
   reads as text and what it says when there's nothing to find."
-  (:require [neorepl.features :as features]
+  (:require [clojure.string :as str]
+            [neorepl.features :as features]
             [neorepl.render :as render]))
 
 (def all
-  "Each lookup takes the :arg it names, unless it has none, and :code-arg?
-  says that's code. Its :find takes the client, a context with the :ns to
-  look in, the :session and the session's :session-name, if it has one, and
-  the argument. :text turns what it finds into text, code when :code? says
-  so, and :none says what finding nothing means."
+  "Each lookup takes the :arg it names, unless it has none: :code-arg? says
+  that's code, :args? that it's several, as a seq, and :optional? that it can
+  be left out. Its :find takes the client, a context with the :ns to look in,
+  the :session and the session's :session-name, if it has one, and the
+  argument. :text turns what it finds into text, code when :code? says so,
+  and :none says what finding nothing means."
   [{:name "doc" :arg "SYM" :help "Show the documentation of SYM"
     :find (fn [client {:keys [ns]} sym] (features/info client sym ns))
     :text render/doc-text
@@ -40,6 +42,14 @@
                 (select-keys info [:file :line :column]))))
     :text render/location-text
     :none (fn [{:keys [ns]} sym] (str "Nowhere to find " sym " in " ns))}
+   {:name "reload" :arg "NS..." :args? true :optional? true
+    :help "Reload the namespaces NS, or the ones that changed"
+    :find (fn [client _ nses] (features/reload client nses))
+    :text (fn [{:keys [reloaded output]}]
+            (str (some-> output str/trimr (str "\n"))
+                 (if (seq reloaded)
+                   (str "Reloaded " (str/join ", " reloaded))
+                   "Nothing changed")))}
    {:name "pst" :help "Show the stack trace of the last error"
     :find (fn [client {:keys [session]} _] (features/last-error client session))
     :text render/error-text

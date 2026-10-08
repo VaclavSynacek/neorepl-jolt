@@ -82,8 +82,9 @@
 (defn request
   "Sends msg and waits for all of its responses, returning them as a vector.
   Throws when the connection drops or when the responses don't arrive within
-  :timeout-ms (10s by default). In the latter case the ex-data has the
-  message :id, for interrupting it, and later responses are dropped."
+  :timeout-ms (10s by default, as long as they take with nil). In the latter
+  case the ex-data has the message :id, for interrupting it, and later
+  responses are dropped."
   ([client msg] (request client msg {}))
   ([client msg {:keys [timeout-ms] :or {timeout-ms 10000}}]
    (let [responses (atom [])
@@ -93,7 +94,7 @@
                                   (let [all (swap! responses conj response)]
                                     (when (done? response)
                                       (deliver result all))))))
-         all (or (deref result timeout-ms nil)
+         all (or (if timeout-ms (deref result timeout-ms nil) @result)
                  ;; Too late: from now on the handler ignores everything,
                  ;; unless done slipped in just now.
                  (do (deliver result nil) @result))]
