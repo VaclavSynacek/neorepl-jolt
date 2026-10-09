@@ -50,14 +50,16 @@
            (is (= "clojure" (:tool (jack-in/find-project dir nil))))))))))
 
 (deftest command-test
-  (let [{:keys [nrepl cider-nrepl]} jack-in/versions]
+  (let [{:keys [nrepl cider-nrepl piggieback]} jack-in/versions]
     (testing "the Clojure CLI, with the deps and an alias of its own"
       (let [[clojure sdeps deps & more] (jack-in/command "clojure" {:aliases ["dev" "test"] :port 7888})]
         (is (= ["clojure" "-Sdeps"] [clojure sdeps]))
         (is (= {:deps {'nrepl/nrepl {:mvn/version nrepl}
-                       'cider/cider-nrepl {:mvn/version cider-nrepl}}
+                       'cider/cider-nrepl {:mvn/version cider-nrepl}
+                       'cider/piggieback {:mvn/version piggieback}}
                 :aliases {:neorepl/jack-in {:main-opts ["-m" "nrepl.cmdline"
-                                                        "--middleware" "[cider.nrepl/cider-middleware]"]}}}
+                                                        "--middleware"
+                                                        "[cider.nrepl/cider-middleware cider.piggieback/wrap-cljs-repl]"]}}}
                (edn/read-string deps)))
         (testing "written out plainly, for people to read"
           (is (not (str/includes? deps "#:"))))
@@ -66,6 +68,8 @@
     (testing "Leiningen"
       (is (= ["lein"
               "update-in" ":dependencies" "conj" (str "[nrepl/nrepl \"" nrepl "\"]") "--"
+              "update-in" ":dependencies" "conj" (str "[cider/piggieback \"" piggieback "\"]") "--"
+              "update-in" ":repl-options:nrepl-middleware" "conj" "cider.piggieback/wrap-cljs-repl" "--"
               "update-in" ":plugins" "conj" (str "[cider/cider-nrepl \"" cider-nrepl "\"]") "--"
               "with-profile" "+dev,-test"
               "repl" ":headless" ":port" "7888"]

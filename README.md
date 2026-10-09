@@ -46,12 +46,26 @@ neorepl server --port 7888
 ```
 
 ClojureScript REPLs run inside a Clojure session on the server, through
-shadow-cljs or piggieback, and the REPL follows the session there. With
-shadow-cljs, `(shadow/repl :app)` switches to the `:app` build's runtime and
-`(shadow/node-repl)` to a fresh Node one. From then on evaluations are
-ClojureScript's, and so are completion, eldoc, `,doc`, `,where` and
-`,macroexpand` when the server has cider-nrepl. `:cljs/quit` switches back. Ctrl-C can't stop ClojureScript code that's still running, so
-a second Ctrl-C stops waiting for it.
+shadow-cljs or piggieback, which jack-in adds to deps.edn and Leiningen
+projects. The REPL follows the session into whichever runtime you start:
+
+```clojure
+;; shadow-cljs: the :app build's runtime, or a fresh Node one
+(shadow/repl :app)
+(shadow/node-repl)
+;; figwheel-main: builds dev and connects to its runtime
+(figwheel.main.api/start "dev")
+;; ClojureScript alone: a Node runtime
+(require 'cljs.repl.node)
+(cider.piggieback/cljs-repl (cljs.repl.node/repl-env))
+```
+
+From then on evaluations are ClojureScript's, and so are completion, eldoc,
+`,doc`, `,where` and `,macroexpand` when the server has cider-nrepl.
+`:cljs/quit` switches back. Ctrl-C can't stop ClojureScript code that's
+still running. With shadow-cljs a second Ctrl-C stops waiting for it, and
+piggieback stops waiting on the first Ctrl-C, though the code keeps the
+runtime busy.
 
 `neorepl eval` evaluates code on the same server:
 

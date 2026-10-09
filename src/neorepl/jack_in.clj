@@ -11,10 +11,13 @@
 
 (def versions
   "What goes on the server's classpath: nREPL, newer than what the build tool
-  might bring, and cider-nrepl. shadow-cljs only gets cider-nrepl, since it
-  comes with the nREPL it's made for."
+  might bring, cider-nrepl and piggieback, for ClojureScript REPLs.
+  piggieback does nothing in projects without ClojureScript. shadow-cljs
+  only gets cider-nrepl, since it comes with the nREPL it's made for and
+  runs ClojureScript REPLs itself."
   {:nrepl "1.8.0"
-   :cider-nrepl "0.63.1"})
+   :cider-nrepl "0.63.1"
+   :piggieback "0.8.0"})
 
 (defn- builds-with-project?
   "Whether the shadow-cljs.edn in dir has shadow-cljs build with the
@@ -82,22 +85,26 @@
   the deps.edn aliases, or Leiningen profiles, to start it with, as names
   without the colon, for the tools that take them."
   [tool-name {:keys [aliases port]}]
-  (let [{:keys [nrepl cider-nrepl]} versions]
+  (let [{:keys [nrepl cider-nrepl piggieback]} versions]
     (case tool-name
       "clojure" (cond-> ["clojure"
                          ;; The same every time, so the CLI's classpath cache
                          ;; keeps working.
                          "-Sdeps" (binding [*print-namespace-maps* false]
                                     (pr-str {:deps {'nrepl/nrepl {:mvn/version nrepl}
-                                                    'cider/cider-nrepl {:mvn/version cider-nrepl}}
+                                                    'cider/cider-nrepl {:mvn/version cider-nrepl}
+                                                    'cider/piggieback {:mvn/version piggieback}}
                                              :aliases {:neorepl/jack-in
                                                        {:main-opts ["-m" "nrepl.cmdline"
-                                                                    "--middleware" "[cider.nrepl/cider-middleware]"]}}}))
+                                                                    "--middleware"
+                                                                    "[cider.nrepl/cider-middleware cider.piggieback/wrap-cljs-repl]"]}}}))
                          ;; The jack-in alias goes last, so its :main-opts win.
                          (str "-M" (str/join (map #(str ":" %) (concat aliases ["neorepl/jack-in"]))))]
                   port (conj "--port" (str port)))
       "lein" (concat ["lein"
                       "update-in" ":dependencies" "conj" (str "[nrepl/nrepl " (pr-str nrepl) "]") "--"
+                      "update-in" ":dependencies" "conj" (str "[cider/piggieback " (pr-str piggieback) "]") "--"
+                      "update-in" ":repl-options:nrepl-middleware" "conj" "cider.piggieback/wrap-cljs-repl" "--"
                       "update-in" ":plugins" "conj" (str "[cider/cider-nrepl " (pr-str cider-nrepl) "]") "--"]
                      (when (seq aliases)
                        ;; Added to the default profiles, unless they say otherwise.

@@ -765,7 +765,8 @@ Clojure CLI for deps.edn, babashka for bb.edn and shadow-cljs for
 shadow-cljs.edn, in that order when there are several. Except that
 shadow-cljs goes first when it builds with the project's deps.edn or
 project.clj, as :deps or :lein in shadow-cljs.edn say. The server gets
-cider-nrepl, for CIDER's tooling, which babashka's has built in."
+cider-nrepl, for CIDER's tooling, which babashka's has built in. Leiningen
+and Clojure CLI servers also get piggieback, for ClojureScript REPLs."
    "Exit status: 0 when the server ends fine, 1 when it fails to start or ends
 with an error, and 2 on usage errors."
    "Examples:
