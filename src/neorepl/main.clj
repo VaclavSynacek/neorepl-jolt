@@ -20,6 +20,10 @@
 (defn- usage-error [msg]
   (ex-info msg {:type ::usage}))
 
+(def version
+  "neorepl's version, which every release bumps."
+  "0.1.0-snapshot")
+
 (defn- warn [msg]
   (binding [*out* *err*]
     (println (str "neorepl: " msg))))
@@ -848,7 +852,8 @@ A terminal client for nREPL servers. Without a COMMAND it starts a REPL.
 Commands:
 " (cli/indented-columns (map (juxt :name :summary) commands)) "
 
-Run neorepl COMMAND --help for its options."))
+Run neorepl COMMAND --help for its options. neorepl --version prints the
+version."))
 
 (defn- run-command [{:keys [options help main]} args ctx]
   (let [{:keys [error] :as parsed} (cli/parse options args)]
@@ -866,13 +871,14 @@ Run neorepl COMMAND --help for its options."))
   (let [[command & more] args
         ;; Without a command, it's the REPL, options and all.
         [command args] (if (or (nil? command)
-                               (and (str/starts-with? command "-") (not (#{"-h" "--help"} command))))
+                               (and (str/starts-with? command "-") (not (#{"-h" "--help" "--version"} command))))
                          ["repl" args]
                          [command more])
         spec (some #(when (= command (:name %)) %) commands)]
     (try
       (cond
         (contains? #{"help" "-h" "--help"} command) (do (println help) 0)
+        (= "--version" command) (do (println "neorepl" version) 0)
         spec (run-command spec args ctx)
         :else (throw (usage-error (str "Unknown command: " command))))
       (catch clojure.lang.ExceptionInfo e
