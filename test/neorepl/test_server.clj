@@ -58,6 +58,18 @@
   [s]
   (some-> s (str/replace "\r\n" "\n")))
 
+(defn clojure-command
+  "The command that runs Clojure the way the tests run, on babashka or the
+  JVM, with their classpath, to which clojure.main's arguments go."
+  []
+  (let [;; Absolute, since the process may run somewhere else.
+        classpath (->> (str/split (System/getProperty "java.class.path") (re-pattern File/pathSeparator))
+                       (map #(.getAbsolutePath (io/file %)))
+                       (str/join File/pathSeparator))]
+    (if (System/getProperty "babashka.version")
+      ["bb" "-cp" classpath]
+      [(str (io/file (System/getProperty "java.home") "bin" "java")) "-cp" classpath "clojure.main"])))
+
 (defn free-port
   "A port nothing listens on, for the time being."
   []

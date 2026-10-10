@@ -9,7 +9,8 @@
             [neorepl.lookups :as lookups]
             [neorepl.lexer :as lexer]
             [neorepl.nrepl :as nrepl]
-            [neorepl.render :as render])
+            [neorepl.render :as render]
+            [neorepl.shutdown :as shutdown])
   (:import (java.security MessageDigest)
            (sun.misc Signal SignalHandler)))
 
@@ -179,11 +180,16 @@
 
   What an interrupted evaluation says from then on is left out, since it
   comes from it dying: an InterruptedException, or code carrying on after a
-  read from *in* got cut short."
+  read from *in* got cut short. So is what evaluations say once neorepl's
+  exiting, which interrupts them."
   [client session {:keys [running interrupted command-thread]}
    {:keys [read-code read-line width print-response print-message] :as io}]
-  (let [print-response #(let [stopped @interrupted]
-                          (when-not (and stopped (= stopped (:id %)))
+  (let [print-response #(let [stopped @interrupted
+                              id (:id %)]
+                          ;; What the server prints has no id, and isn't an
+                          ;; evaluation dying.
+                          (when-not (or (and stopped (= stopped id))
+                                        (and id (shutdown/exiting?)))
                             (print-response %)))
         late (agent nil :error-mode :continue)]
     ;; Late output comes on the client's reader thread, which mustn't wait

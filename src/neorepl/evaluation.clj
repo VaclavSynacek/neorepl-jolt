@@ -3,7 +3,8 @@
   from *in*, interrupting when needed and summing up what came back. Front
   ends decide how to show it."
   (:require [clojure.string :as str]
-            [neorepl.nrepl :as nrepl])
+            [neorepl.nrepl :as nrepl]
+            [neorepl.shutdown :as shutdown])
   (:import (java.util.concurrent LinkedBlockingQueue TimeUnit)))
 
 (def ^:private failure-statuses
@@ -121,13 +122,19 @@
         responses (LinkedBlockingQueue.)
         given-up (promise)
         sent (promise)
+        finished (promise)
         ;; Otherwise the evaluation keeps the session busy for later calls.
         ;; In place before the message goes out, since neorepl can get
         ;; killed right after.
-        hook (Thread. ^Runnable #(when-let [id (deref sent 1000 nil)]
-                                   (interrupt! client session id responses)))
-        runtime (Runtime/getRuntime)]
-    (.addShutdownHook runtime hook)
+        cleanup (shutdown/add! #(when-let [id (deref sent 1000 nil)]
+                                  (interrupt! client session id responses)
+                                  ;; Its server may stop next, and shouldn't
+                                  ;; while it's still answering.
+                                  (deref finished 1000 nil)))]
+    (when-not cleanup
+      ;; neorepl's exiting, so nothing more goes out: this waits for the
+      ;; JVM to halt.
+      @(promise))
     (try
       (let [;; The server cuts values itself, sparing us an endless (range),
             ;; but not every server has the print middleware.
@@ -178,7 +185,8 @@
                   (result acc nil)
                   (recur acc)))))))
       (finally
-        (.removeShutdownHook runtime hook)))))
+        (deliver finished true)
+        (shutdown/remove! cleanup)))))
 
 (defn text-printer
   "A response handler printing output to stdout and stderr, and each value on

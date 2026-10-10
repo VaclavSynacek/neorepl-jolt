@@ -9,7 +9,7 @@
             [neorepl.nrepl :as nrepl]
             [neorepl.sessions :as sessions]
             [neorepl.test-server :as test-server :refer [*port* call-with-temp-dir lf spit-file with-client]])
-  (:import (java.io File StringWriter)
+  (:import (java.io StringWriter)
            (java.util.concurrent TimeUnit)))
 
 (def ^:dynamic *dir*
@@ -191,15 +191,7 @@
   "Runs neorepl with args in dir, in a process of its own, on the runtime
   running the tests, with the test session cache."
   ^Process [dir & args]
-  (let [;; Absolute, since the process runs somewhere else.
-        classpath (->> (str/split (System/getProperty "java.class.path") (re-pattern File/pathSeparator))
-                       (map #(.getAbsolutePath (io/file %)))
-                       (str/join File/pathSeparator))
-        cmd (if (System/getProperty "babashka.version")
-              ["bb" "-cp" classpath "-m" "neorepl.main"]
-              [(str (io/file (System/getProperty "java.home") "bin" "java"))
-               "-cp" classpath "clojure.main" "-m" "neorepl.main"])
-        builder (doto (ProcessBuilder. ^java.util.List (into cmd args))
+  (let [builder (doto (ProcessBuilder. ^java.util.List (into (test-server/clojure-command) (list* "-m" "neorepl.main" args)))
                   (.directory (io/file dir)))]
     (.put (.environment builder) "XDG_CACHE_HOME" (str *dir*))
     (.start builder)))
@@ -331,17 +323,22 @@
          (spit-file dir "bb.edn" "{}")
          (let [process (start-neorepl-in dir "repl")
                out (io/reader (.getInputStream process))
-               ;; Read as it comes, since destroy closes it.
+               ;; Read as it comes, so the pipe can't fill up.
                err (future (slurp (.getErrorStream process)))]
-           (doto (io/writer (.getOutputStream process))
-             (.write "(do (println :sleeping) (Thread/sleep 20000))\n")
-             (.flush))
-           (is (str/ends-with? (.readLine ^java.io.BufferedReader out) ":sleeping"))
-           (is (.exists (io/file dir ".nrepl-port")))
-           (.destroy process)
-           (is (.waitFor process 10 TimeUnit/SECONDS))
-           (is (not (.exists (io/file dir ".nrepl-port"))))
-           (is (not (str/includes? @err "Exception")))))))))
+           (try
+             (doto (io/writer (.getOutputStream process))
+               (.write "(do (println :sleeping) (Thread/sleep 20000))\n")
+               (.flush))
+             (is (str/ends-with? (.readLine ^java.io.BufferedReader out) ":sleeping"))
+             (is (.exists (io/file dir ".nrepl-port")))
+             ;; Not Process's destroy, which closes the streams on Linux.
+             (.destroy (.toHandle process))
+             (is (.waitFor process 10 TimeUnit/SECONDS))
+             (is (not (.exists (io/file dir ".nrepl-port"))))
+             (let [err (deref err 10000 "neorepl didn't exit")]
+               (is (not (str/includes? err "Exception")) err))
+             (finally
+               (.destroyForcibly process)))))))))
 
 (deftest server-test
   ;; Windows has no SIGTERM, so stopping neorepl there leaves the server.
