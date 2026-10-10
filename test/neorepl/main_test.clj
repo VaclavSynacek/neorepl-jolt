@@ -65,7 +65,11 @@
            (run "-s" "warn-line" "--timeout" "0.1" "(binding [*out* *err*] (print \"oops\") (flush)) (Thread/sleep 5000)"))))
   (testing "and so does whatever comes after the output"
     (is (= {:status 0 :out "nil\n" :err "oops\n"}
-           (run "(binding [*out* *err*] (print \"oops\") (flush))")))))
+           (run "(binding [*out* *err*] (print \"oops\") (flush))"))))
+  (testing "losing the connection"
+    (let [{:keys [status err]} (run "(hang-up)")]
+      (is (= 3 status))
+      (is (str/includes? err "Lost the connection")))))
 
 (deftest structured-format-test
   (testing "edn"

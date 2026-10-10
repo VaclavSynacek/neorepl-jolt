@@ -80,7 +80,8 @@ and the like carry over from one call to the next.")
 
 (def ^:private evaluation-exit-statuses
   "Exit status: 0 on success, 1 when the evaluation fails, 2 on usage errors,
-3 when there's no server to talk to and 124 when it times out.")
+3 when there's no server to talk to or the connection to it drops and 124
+when it times out.")
 
 (defn- help-text
   "A --help text: the usage and description paragraphs, then the options and
@@ -281,7 +282,7 @@ and the like carry over from one call to the next.")
               (when truncated (warn (str "Cut the output at " max-output " characters")))
               (some-> message warn))
           (emit format result))
-        (case status "ok" 0 "timeout" 124 1)))))
+        (case status "ok" 0 "timeout" 124 "disconnected" 3 1)))))
 
 (def ^:private eval-options
   (concat connection-options

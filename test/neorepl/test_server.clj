@@ -39,10 +39,10 @@
   "Never answers an evaluation of (stuck), the way shadow-cljs doesn't one
   that keeps the JavaScript runtime busy, and answers one of (slow) after a
   second. nREPL can't interrupt either, since they don't run in the
-  session. One of (late-read) reads a line from *in*, but only says so
-  after 300ms, as if the server had been slow to say it, and ends once
-  interrupted. One of (stubborn-read) does the same, but takes 500ms to say
-  it can't be interrupted."
+  session. One of (hang-up) closes the connection. One of (late-read) reads
+  a line from *in*, but only says so after 300ms, as if the server had been
+  slow to say it, and ends once interrupted. One of (stubborn-read) does
+  the same, but takes 500ms to say it can't be interrupted."
   [handler]
   (fn [{:keys [op code session interrupt-id stdin] :as msg}]
     (let [interrupted (get @late-reads interrupt-id)
@@ -60,6 +60,7 @@
             (transport/respond-to msg :status "done"))
         (not= "eval" op) (handler msg)
         (= "(stuck)" code) nil
+        (= "(hang-up)" code) (.close ^java.io.Closeable (:transport msg))
         (= "(slow)" code) (future
                             (Thread/sleep 1000)
                             (transport/respond-to msg :ns "user" :value ":slow")
