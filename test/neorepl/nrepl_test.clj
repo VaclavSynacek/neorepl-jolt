@@ -1,7 +1,7 @@
 (ns neorepl.nrepl-test
   (:require [clojure.test :refer [are deftest is testing use-fixtures]]
             [neorepl.nrepl :as nrepl]
-            [neorepl.test-server :as test-server :refer [*port* with-client]]
+            [neorepl.test-server :as test-server :refer [*port* lf with-client]]
             [nrepl.middleware :as middleware]
             [nrepl.server :as server]
             [nrepl.transport :as transport])
@@ -77,7 +77,7 @@
       (testing "values come back as strings, output separately"
         (let [responses (eval-in client session "(println \"hi\") (+ 1 2) {:a 1}")]
           (is (= ["nil" "3" "{:a 1}"] (values responses)))
-          (is (= "hi\n" (apply str (keep :out responses))))
+          (is (= "hi\n" (lf (apply str (keep :out responses)))))
           (is (nrepl/done? (peek responses)))))
       (testing "sessions keep their state"
         (eval-in client session "(def x 41) (in-ns 'neorepl.scratch)")
@@ -137,15 +137,15 @@
                            (swap! seen conj response)
                            (when (nrepl/done? response) (deliver done true))))
             (is (deref done 5000 false))
-            (is (= ["1\n" "2\n"] (keep :out @seen)))))
+            (is (= ["1\n" "2\n"] (map lf (keep :out @seen))))))
         (testing "output that arrives after done goes to on-unclaimed"
           (eval-in client session "(future (Thread/sleep 100) (println \"late\"))")
-          (is (= "late\n" (:out (deref unclaimed 5000 nil)))))
+          (is (= "late\n" (lf (:out (deref unclaimed 5000 nil))))))
         (testing "or wherever on-unclaimed! says"
           (let [elsewhere (promise)]
             (nrepl/on-unclaimed! client #(when (:out %) (deliver elsewhere %)))
             (eval-in client session "(future (Thread/sleep 100) (println \"later\"))")
-            (is (= "later\n" (:out (deref elsewhere 5000 nil))))))
+            (is (= "later\n" (lf (:out (deref elsewhere 5000 nil)))))))
         (testing "interrupting a running evaluation"
           (let [started (promise)
                 done (promise)

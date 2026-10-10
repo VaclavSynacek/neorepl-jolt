@@ -6,7 +6,7 @@
             [clojure.test :refer [deftest is testing use-fixtures]]
             [neorepl.main :as main]
             [neorepl.nrepl :as nrepl]
-            [neorepl.test-server :as test-server :refer [*port* call-with-temp-dir with-client]])
+            [neorepl.test-server :as test-server :refer [*port* call-with-temp-dir lf with-client]])
   (:import (java.io ByteArrayInputStream ByteArrayOutputStream PipedInputStream PipedOutputStream)))
 
 (use-fixtures :once (test-server/fixture))
@@ -187,7 +187,7 @@
     (call-with-temp-dir
      (fn [dir]
        (is (= "user=> 3\nuser=> \n"
-              (with-out-str
+              (lf (with-out-str
                 (with-in-str "(+ 1 2)\n"
                   (main/run ["repl" "-p" (str *port*)]
                             {:dir dir
@@ -196,7 +196,7 @@
                              :terminal {:input (ByteArrayInputStream. (byte-array 0))
                                         :output (ByteArrayOutputStream.)
                                         :width 80
-                                        :type "dumb"}})))))))))
+                                        :type "dumb"}}))))))))))
 
 (deftest lookup-test
   (testing "TAB completes"

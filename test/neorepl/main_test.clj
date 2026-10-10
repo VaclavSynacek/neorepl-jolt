@@ -8,7 +8,7 @@
             [neorepl.main :as main]
             [neorepl.nrepl :as nrepl]
             [neorepl.sessions :as sessions]
-            [neorepl.test-server :as test-server :refer [*port* call-with-temp-dir spit-file with-client]])
+            [neorepl.test-server :as test-server :refer [*port* call-with-temp-dir lf spit-file with-client]])
   (:import (java.io File StringWriter)
            (java.util.concurrent TimeUnit)))
 
@@ -28,7 +28,7 @@
 
 (defn- run-in
   "Runs neorepl with args in dir, with stdin as standard input. Returns the
-  exit :status and what went to :out and :err."
+  exit :status and what went to :out and :err, their lines ending in \n."
   [dir stdin & args]
   (let [err (StringWriter.)
         status (atom nil)
@@ -36,7 +36,7 @@
               (binding [*err* err]
                 (with-in-str stdin
                   (reset! status (main/run args {:dir dir :sessions-file (sessions-file)})))))]
-    {:status @status :out out :err (str err)}))
+    {:status @status :out (lf out) :err (lf (str err))}))
 
 (defn- run-command
   "Runs a neorepl command against the test server with args."
@@ -69,7 +69,7 @@
     (let [{:keys [status out]} (run "--format" "edn" "(println \"hi\") 42")]
       (is (zero? status))
       (is (= {:status "ok" :values ["nil" "42"] :out "hi\n" :err "" :ns "user"}
-             (edn/read-string out)))))
+             (update (edn/read-string out) :out lf)))))
   (testing "edn for an error"
     (let [{:keys [status out]} (run "--format=edn" "(/ 1 0)")
           result (edn/read-string out)]
