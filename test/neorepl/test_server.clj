@@ -53,6 +53,11 @@
 (defn windows? []
   (str/starts-with? (System/getProperty "os.name") "Windows"))
 
+(defn lf
+  "s with \n for the \r\n that println ends lines with on Windows."
+  [s]
+  (some-> s (str/replace "\r\n" "\n")))
+
 (defn free-port
   "A port nothing listens on, for the time being."
   []
