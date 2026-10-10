@@ -102,8 +102,8 @@
     :on-response  called with each response as it arrives
     :read-line    called when the code reads *in*, for the next line, nil
                   at end of input or :interrupted to leave the read
-                  unanswered, since the evaluation's being interrupted
-                  (read-line by default)
+                  unanswered, since the evaluation's being interrupted,
+                  until the interrupt fails (read-line by default)
     :timeout      seconds after which to interrupt the evaluation
     :max-output   cuts each value at that many characters, and stdout and
                   stderr too, marking the result :truncated
@@ -151,7 +151,12 @@
                            (when-not (interrupt! client session id responses)
                              (.put responses ::interrupt-failed))))
             give-up #(do (deliver given-up true)
-                         (result %1 %2))]
+                         (result %1 %2))
+            declined-read (volatile! false)
+            answer-read #(let [line (read-line)]
+                           (vreset! declined-read (= :interrupted line))
+                           (when-not @declined-read
+                             (send-stdin client session line)))]
         (on-send id interrupt)
         (loop [acc {:values [] :out [] :err [] :out-size 0 :err-size 0 :statuses #{}}]
           (let [response (if deadline
@@ -167,7 +172,10 @@
               (= ::interrupt-failed response)
               (do (when-not (realized? interrupt-failed)
                     (deliver interrupt-failed true)
-                    (on-interrupt-failed))
+                    (on-interrupt-failed)
+                    ;; The evaluation's still waiting for that line.
+                    (when @declined-read
+                      (answer-read)))
                   (recur acc))
 
               :else
@@ -178,9 +186,7 @@
                     acc (cond-> (add-response acc fitted collect?) truncated? (assoc :truncated? true))]
                 (on-response fitted)
                 (when (nrepl/status? response "need-input")
-                  (let [line (read-line)]
-                    (when-not (= :interrupted line)
-                      (send-stdin client session line))))
+                  (answer-read))
                 (if (nrepl/done? response)
                   (result acc nil)
                   (recur acc)))))))
