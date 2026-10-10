@@ -78,7 +78,8 @@ echo '(range 3)' | neorepl eval -
 Evaluations share a session, so `*ns*`, `*1` and `*e` carry over from one
 call to the next. `--session NAME` keeps separate ones apart, `neorepl
 sessions` lists them and `neorepl sessions close NAME` starts one over.
-`neorepl eval --help` has the rest.
+Servers whose sessions end with the connection, like Basilisp's and jank's,
+start each call afresh. `neorepl eval --help` has the rest.
 
 `neorepl load` loads a file the way `load-file` does, which is how you get
 your changes into the running program after editing it:
