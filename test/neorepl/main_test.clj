@@ -62,7 +62,10 @@
       (is (str/includes? err "Divide by zero"))))
   (testing "warnings start on a line of their own"
     (is (= {:status 124 :out "nil\n" :err "oops\nneorepl: Timed out after 0.1s and interrupted the evaluation\n"}
-           (run "-s" "warn-line" "--timeout" "0.1" "(binding [*out* *err*] (print \"oops\") (flush)) (Thread/sleep 5000)")))))
+           (run "-s" "warn-line" "--timeout" "0.1" "(binding [*out* *err*] (print \"oops\") (flush)) (Thread/sleep 5000)"))))
+  (testing "and so does whatever comes after the output"
+    (is (= {:status 0 :out "nil\n" :err "oops\n"}
+           (run "(binding [*out* *err*] (print \"oops\") (flush))")))))
 
 (deftest structured-format-test
   (testing "edn"

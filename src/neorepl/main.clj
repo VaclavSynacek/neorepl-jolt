@@ -231,11 +231,10 @@ and the like carry over from one call to the next.")
 
 (defn- end-err-line
   "Ends the line err, the evaluation's stderr output, left unfinished, so
-  that warnings after it get a line of their own."
+  that a warning after it, or the shell's prompt, gets a line of its own."
   [err]
   (when-not (or (empty? err) (str/ends-with? err "\n"))
-    (binding [*out* *err*]
-      (newline))))
+    (print-err "\n")))
 
 (defn- emit
   "Prints data in format, edn or json."
@@ -278,7 +277,7 @@ and the like carry over from one call to the next.")
                               :on-response (if (= "text" format) (evaluation/text-printer) (fn [_]))}
                              evaluate-options))]
         (if (= "text" format)
-          (do (when (or truncated message) (end-err-line err))
+          (do (end-err-line err)
               (when truncated (warn (str "Cut the output at " max-output " characters")))
               (some-> message warn))
           (emit format result))
