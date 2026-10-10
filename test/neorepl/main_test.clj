@@ -669,3 +669,7 @@
     ["where" "--help"] "Usage: neorepl where"
     ["reload" "--help"] "Usage: neorepl reload"
     ["server" "--help"] "Usage: neorepl server"))
+
+(deftest version-test
+  (is (= {:status 0 :out (str "neorepl " main/version "\n") :err ""}
+         (run-in *dir* "" "--version"))))
