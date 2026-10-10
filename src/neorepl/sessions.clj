@@ -6,7 +6,8 @@
             [clojure.java.io :as io]
             [neorepl.nrepl :as nrepl])
   (:import (java.io File IOException)
-           (java.nio.file CopyOption Files StandardCopyOption)))
+           (java.nio.channels FileChannel)
+           (java.nio.file CopyOption Files OpenOption StandardCopyOption StandardOpenOption)))
 
 (defn- read-cache [^File file]
   (let [cache (when (.isFile file)
@@ -31,6 +32,33 @@
     (catch IOException e
       (binding [*out* *err*]
         (println (str "neorepl: Couldn't save the session in " file ": " (ex-message e)))))))
+
+(def ^:private in-process
+  "What threads hold while one of them has the cache locked: file locks keep
+  other processes out, and fail for a thread whose process holds one already."
+  (Object.))
+
+(defn- call-with-lock
+  "Calls f holding a lock on file's lock file, so CLI calls running at the
+  same time update the cache one after the other instead of dropping each
+  other's sessions. When there's no locking it (e.g. on a file system
+  without locks), f runs all the same, as sessions work without the cache."
+  [^File file f]
+  (locking in-process
+    (let [^FileChannel channel (try
+                                 (io/make-parents file)
+                                 (FileChannel/open (.toPath (io/file (str file ".lock")))
+                                                   (into-array OpenOption [StandardOpenOption/CREATE StandardOpenOption/WRITE]))
+                                 (catch IOException _))]
+      (try
+        (when channel
+          (try
+            (.lock channel)
+            (catch IOException _)))
+        (f)
+        (finally
+          ;; Closing the channel releases the lock.
+          (some-> channel .close))))))
 
 (defn- live-sessions
   "A predicate telling whether client's server knows a session id. Servers
@@ -58,11 +86,18 @@
   Clones and caches a new one when there's none yet or the server doesn't
   know the cached one anymore."
   [file client name]
-  (or (get (named file client) name)
-      (let [session (nrepl/clone-session client)]
-        ;; Read again, to keep what other processes wrote in the meantime.
-        (write-cache! file (assoc-in (read-cache file) [(:address client) name] session))
-        session)))
+  (let [before (cached file client name)]
+    (if (and before ((live-sessions client) before))
+      before
+      (call-with-lock file
+        #(let [cache (read-cache file)
+               now (get-in cache [(:address client) name])]
+           ;; Another call may have cached a new one in the meantime.
+           (if (and now (not= now before))
+             now
+             (let [session (nrepl/clone-session client)]
+               (write-cache! file (assoc-in cache [(:address client) name] session))
+               session)))))))
 
 (defn interrupt
   "Interrupts whatever runs in the session called name, returning how that
@@ -79,5 +114,5 @@
   [file client name]
   (when-let [session (cached file client name)]
     (let [closed? (nrepl/close-session client session)]
-      (write-cache! file (update (read-cache file) (:address client) dissoc name))
+      (call-with-lock file #(write-cache! file (update (read-cache file) (:address client) dissoc name)))
       (when closed? session))))

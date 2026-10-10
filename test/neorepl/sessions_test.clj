@@ -5,7 +5,7 @@
             [clojure.test :refer [deftest is testing use-fixtures]]
             [neorepl.nrepl :as nrepl]
             [neorepl.sessions :as sessions]
-            [neorepl.test-server :as test-server :refer [*port* call-with-temp-dir spit-file]])
+            [neorepl.test-server :as test-server :refer [*port* call-with-temp-dir spit-file with-client]])
   (:import (java.io StringWriter)))
 
 (use-fixtures :once (test-server/fixture))
@@ -67,3 +67,44 @@
              (is (str/includes? (str err) "Couldn't save the session"))))
          (finally
            (nrepl/close client)))))))
+
+(deftest ensure!-at-the-same-time-test
+  (call-with-temp-dir
+   (fn [dir]
+     (let [file (io/file dir "sessions.edn")
+           names (map #(str "parallel-" %) (range 10))]
+       (with-client [client {:port *port*}]
+         (try
+           (testing "sessions asked for at the same time all get cached, as parallel CLI calls ask for them"
+             (let [sessions (doall (pmap #(sessions/ensure! file client %) names))]
+               (is (= (zipmap names sessions) (sessions/named file client)))))
+           (testing "a new name asked for at the same time gets one session"
+             (is (= 1 (count (set (pmap (fn [_] (sessions/ensure! file client "same")) (range 5)))))))
+           (finally
+             (run! #(sessions/close! file client %) (cons "same" names)))))))))
+
+(deftest lock-test
+  (testing "the cache waits for another process that has it locked"
+    (call-with-temp-dir
+     (fn [dir]
+       (let [file (io/file dir "sessions.edn")
+             ;; The lock file as an argument, as Windows command lines mangle
+             ;; quotes.
+             holder (.start (ProcessBuilder.
+                             ^java.util.List
+                             ["bb" "-e" (str "(with-open [c (java.nio.channels.FileChannel/open"
+                                             " (.toPath (java.io.File. (first *command-line-args*)))"
+                                             " (into-array java.nio.file.OpenOption [java.nio.file.StandardOpenOption/CREATE"
+                                             " java.nio.file.StandardOpenOption/WRITE]))]"
+                                             " (.lock c) (println :locked) (flush) (Thread/sleep 400))")
+                              (str file ".lock")]))]
+         (try
+           (is (= ":locked" (.readLine (io/reader (.getInputStream holder)))))
+           (with-client [client {:port *port*}]
+             (let [start (System/currentTimeMillis)
+                   session (sessions/ensure! file client "waited")]
+               (is (<= 200 (- (System/currentTimeMillis) start)))
+               (is (= {"waited" session} (sessions/named file client)))
+               (sessions/close! file client "waited")))
+           (finally
+             (.destroy holder))))))))
