@@ -10,13 +10,15 @@ tools. [PLAN.md](PLAN.md) has the details on where this is going.
 
 ## Usage
 
-There's no release yet. From a checkout,
-[bbin](https://github.com/babashka/bbin) puts a `neorepl` command on your
-path:
+[bbin](https://github.com/babashka/bbin) installs the latest release as a
+`neorepl` command, which runs on [babashka](https://babashka.org) 1.13.225
+or newer:
 
 ```shell
-bbin install .
+bbin install io.github.nrepl/neorepl
 ```
+
+From a checkout, `bbin install .` installs that instead.
 
 `neorepl` connects to the nREPL server whose `.nrepl-port` file is in the
 current directory or one of its parents (`neorepl ports` lists the ones it
