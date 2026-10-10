@@ -13,23 +13,62 @@
 
 (def ^:dynamic *port* nil)
 
+(def ^:private late-reads
+  "The evaluations of (late-read) and (stubborn-read) that are running, by
+  message id: their :session, whether they're :stubborn and the :answer
+  they wait for, a line or :interrupted."
+  (atom {}))
+
+(defn- late-read
+  "Answers msg, an eval, the way wrap-stuck says (late-read) and
+  (stubborn-read) do."
+  [{:keys [id session] :as msg} stubborn?]
+  (let [answer (promise)]
+    (swap! late-reads assoc id {:session session :stubborn? stubborn? :answer answer})
+    (future
+      (Thread/sleep 300)
+      (transport/respond-to msg :status "need-input")
+      (let [line (deref answer 5000 :interrupted)]
+        (swap! late-reads dissoc id)
+        (if (= :interrupted line)
+          (transport/respond-to msg :status ["interrupted" "done"])
+          (do (transport/respond-to msg :ns "user" :value (pr-str line))
+              (transport/respond-to msg :status "done")))))))
+
 (defn wrap-stuck
   "Never answers an evaluation of (stuck), the way shadow-cljs doesn't one
   that keeps the JavaScript runtime busy, and answers one of (slow) after a
   second. nREPL can't interrupt either, since they don't run in the
-  session."
+  session. One of (late-read) reads a line from *in*, but only says so
+  after 300ms, as if the server had been slow to say it, and ends once
+  interrupted. One of (stubborn-read) does the same, but takes 500ms to say
+  it can't be interrupted."
   [handler]
-  (fn [{:keys [op code] :as msg}]
-    (cond
-      (not= "eval" op) (handler msg)
-      (= "(stuck)" code) nil
-      (= "(slow)" code) (future
-                          (Thread/sleep 1000)
-                          (transport/respond-to msg :ns "user" :value ":slow")
-                          (transport/respond-to msg :status "done"))
-      :else (handler msg))))
+  (fn [{:keys [op code session interrupt-id stdin] :as msg}]
+    (let [interrupted (get @late-reads interrupt-id)
+          reading (some #(when (= session (:session %)) %) (vals @late-reads))]
+      (cond
+        (and (= "interrupt" op) interrupted)
+        (if (:stubborn? interrupted)
+          (future
+            (Thread/sleep 500)
+            (transport/respond-to msg :status ["session-idle" "done"]))
+          (do (deliver (:answer interrupted) :interrupted)
+              (transport/respond-to msg :status "done")))
+        (and (= "stdin" op) reading)
+        (do (deliver (:answer reading) (str/trim-newline stdin))
+            (transport/respond-to msg :status "done"))
+        (not= "eval" op) (handler msg)
+        (= "(stuck)" code) nil
+        (= "(slow)" code) (future
+                            (Thread/sleep 1000)
+                            (transport/respond-to msg :ns "user" :value ":slow")
+                            (transport/respond-to msg :status "done"))
+        (= "(late-read)" code) (late-read msg false)
+        (= "(stubborn-read)" code) (late-read msg true)
+        :else (handler msg)))))
 
-(middleware/set-descriptor! #'wrap-stuck {:expects #{"eval"}})
+(middleware/set-descriptor! #'wrap-stuck {:expects #{"eval" "interrupt" "stdin"}})
 
 (defn fixture
   "A :once fixture that runs the tests with an nREPL server listening on

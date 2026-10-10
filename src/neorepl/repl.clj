@@ -219,15 +219,17 @@
                 {:keys [status message] :as result}
                 (evaluation/evaluate client
                                      (eval-msg session code (width))
-                                     (cond-> {:on-send #(reset! running {:id %1 :interrupt %2})
-                                              ;; It's not dying after all, so what it says
-                                              ;; from then on is worth seeing.
-                                              :on-interrupt-failed
-                                              #(do (reset! interrupted nil)
-                                                   (print-message "The server can't interrupt the evaluation, Ctrl-C again stops waiting for it"))
-                                              :on-response print-response
-                                              :collect? false}
-                                       read-line (assoc :read-line read-line)))]
+                                     {:on-send #(reset! running {:id %1 :interrupt %2})
+                                      ;; It's not dying after all, so what it says
+                                      ;; from then on is worth seeing.
+                                      :on-interrupt-failed
+                                      #(do (reset! interrupted nil)
+                                           (print-message "The server can't interrupt the evaluation, Ctrl-C again stops waiting for it"))
+                                      :on-response print-response
+                                      ;; A Ctrl-C that came before the server
+                                      ;; asked for a line is for the read too.
+                                      :read-line #(if @interrupted :interrupted (read-line))
+                                      :collect? false})]
             (reset! running nil)
             ;; The Ctrl-C that stopped the wait marked it interrupted again.
             (when (= "stopped" status)
@@ -276,6 +278,7 @@
                               (let [code (read-input)]
                                 (print-response)
                                 code))
+                 :read-line read-line
                  :width (constantly 80)
                  :print-response print-response
                  :print-message #(binding [*out* *err*]

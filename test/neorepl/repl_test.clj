@@ -123,11 +123,32 @@
       (fn [type screen]
         (type "(do (read-line) :read)\r")
         (screen #":read\)\n$")
+        ;; Time for it to go out and ask for the line.
+        (Thread/sleep 200)
         (type "\u0003")
         (is (screen #"The evaluation was interrupted\nuser=> $"))
         ;; Time for the value to show up, if it was going to.
         (Thread/sleep 200)
-        (is (not (re-find #"(?m)(^|=> ):read$" (screen #"user=> $"))))))))
+        (is (not (re-find #"(?m)(^|=> ):read$" (screen #"user=> $")))))))
+  (testing "even when it comes before the code asks for a line"
+    (call-with-repl {}
+      (fn [type screen]
+        (type "(late-read)\r")
+        (screen #"\(late-read\)\n$")
+        ;; Time for it to go out, but not for the server to ask.
+        (Thread/sleep 100)
+        (type "\u0003")
+        (is (screen #"The evaluation was interrupted\nuser=> $")))))
+  (testing "and still gets its line when the interrupt fails after the server asked"
+    (call-with-repl {}
+      (fn [type screen]
+        (type "(stubborn-read)\r")
+        (screen #"\(stubborn-read\)\n$")
+        (Thread/sleep 100)
+        (type "\u0003")
+        (screen #"The server can't interrupt the evaluation, Ctrl-C again stops waiting for it\n")
+        (type "bob\r")
+        (is (screen #"\"bob\"\nuser=> $"))))))
 
 (deftest interrupt-test
   (testing "Ctrl-C at the prompt clears the line"
