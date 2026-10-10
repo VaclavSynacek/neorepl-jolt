@@ -1,18 +1,21 @@
 (ns neorepl.evaluation-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest is testing]]
             [neorepl.evaluation :as evaluation]))
 
 (deftest text-printer-test
   (let [printed (fn [& responses]
                   (let [print-response (evaluation/text-printer)]
-                    ;; stdout and stderr on one terminal.
-                    (with-out-str
-                      (binding [*err* *out*]
-                        (doseq [response responses]
-                          (if (= :prompt response)
-                            (do (print "user=> ")
-                                (print-response))
-                            (print-response response)))))))]
+                    ;; stdout and stderr on one terminal, with println's line
+                    ;; endings as on Unix.
+                    (-> (with-out-str
+                          (binding [*err* *out*]
+                            (doseq [response responses]
+                              (if (= :prompt response)
+                                (do (print "user=> ")
+                                    (print-response))
+                                (print-response response)))))
+                        (str/replace "\r\n" "\n"))))]
     (testing "each value goes on a line of its own"
       (is (= "hi\nnil\n3\n" (printed {:out "hi\n"} {:value "nil"} {:value "3"})))
       (is (= "partial\n3\n" (printed {:out "partial"} {:value "3"}))))
