@@ -259,6 +259,7 @@
   results to *out*, the way clojure.main's REPL does."
   [client session editor-command]
   (let [{:keys [interrupt] :as interruptions} (interruptions)
+        print-response (evaluation/text-printer)
         ;; With nothing to interrupt, Ctrl-C is for the REPL.
         previous (on-sigint #(when-not (interrupt) (System/exit 130)))]
     (try
@@ -266,9 +267,11 @@
                 {:read-code (fn [ns]
                               (print (str ns "=> "))
                               (flush)
-                              (read-input))
+                              (let [code (read-input)]
+                                (print-response)
+                                code))
                  :width (constantly 80)
-                 :print-response (evaluation/text-printer)
+                 :print-response print-response
                  :print-message #(binding [*out* *err*]
                                    (println %))
                  :editor-command editor-command

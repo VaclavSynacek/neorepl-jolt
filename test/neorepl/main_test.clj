@@ -270,6 +270,9 @@
              (:out (repl "(do (in-ns 'repl.scratch) nil)\n")))))
     (testing "values get pretty printed"
       (is (re-find #"(?m)^ :b" (:out (repl "{:a (range 30) :b (range 30)}\n")))))
+    (testing "values go right after the prompt, even after output that didn't end its line"
+      (is (= "user=> partialuser=> 3\nuser=> \n"
+             (:out (repl "(do (print \"partial\") (throw (ex-info \"boom\" {})))\n(+ 1 2)\n")))))
     (testing "reads from *in* take the next line"
       (is (= "user=> \"hello\"\nuser=> \n" (:out (repl "(read-line)\nhello\n")))))
     (testing ":repl/quit"

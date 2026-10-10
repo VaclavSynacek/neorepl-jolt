@@ -182,19 +182,24 @@
 
 (defn text-printer
   "A response handler printing output to stdout and stderr, and each value on
-  a line of its own."
+  a line of its own. Called without a response, once a REPL has read the
+  code after its prompt, it lets the next value start right there, as in
+  clojure.main's REPL."
   []
   (let [fresh-line? (volatile! true)]
-    (fn [{:keys [out err value]}]
-      (when (seq out)
-        (print out)
-        (flush)
-        (vreset! fresh-line? (str/ends-with? out "\n")))
-      (when err
-        (binding [*out* *err*]
-          (print err)
-          (flush)))
-      (when value
-        (when-not @fresh-line? (newline))
-        (println value)
-        (vreset! fresh-line? true)))))
+    (fn
+      ([]
+       (vreset! fresh-line? true))
+      ([{:keys [out err value]}]
+       (when (seq out)
+         (print out)
+         (flush)
+         (vreset! fresh-line? (str/ends-with? out "\n")))
+       (when err
+         (binding [*out* *err*]
+           (print err)
+           (flush)))
+       (when value
+         (when-not @fresh-line? (newline))
+         (println value)
+         (vreset! fresh-line? true))))))
