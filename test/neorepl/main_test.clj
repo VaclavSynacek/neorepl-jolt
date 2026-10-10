@@ -227,7 +227,13 @@
     ;; created the session.
     (is (= {:status 0 :out "\"hello\"\n\"world\"\nnil\n" :err ""}
            (run-in *dir* "hello\nworld\n" "eval" "-p" (str *port*) "-s" "stdin-test"
-                   "(read-line) (read-line) (read-line)")))))
+                   "(read-line) (read-line) (read-line)"))))
+  (testing "but they get end of input when the code came from stdin"
+    (is (= {:status 0 :out "nil\n" :err ""}
+           (run-in *dir* "(read-line)" "eval" "-p" (str *port*) "-s" "stdin-code" "-")))
+    (testing "which leaves the session free"
+      (is (= {:status 0 :out "1\n" :err ""}
+             (run "-s" "stdin-code" "--timeout" "5" "1"))))))
 
 (deftest load-test
   (let [file (spit-file *dir* "src/demo/core.clj"

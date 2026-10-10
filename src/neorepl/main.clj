@@ -265,16 +265,18 @@ and the like carry over from one call to the next.")
 
 (defn- report-evaluation
   "Evaluates msg on the server options point at, in the session they name,
-  prints the result in the format they ask for and returns the exit status."
-  [msg {:keys [session timeout max-output format] :as options} {:keys [dir sessions-file]}]
+  with evaluate-options on top of the ones they give, prints the result in
+  the format they ask for and returns the exit status."
+  [msg {:keys [session timeout max-output format] :as options} {:keys [dir sessions-file]} evaluate-options]
   (with-client options dir
     (fn [client]
       (let [{:keys [status message truncated err] :as result}
             (evaluation/evaluate client
                       (assoc msg :session (sessions/ensure! sessions-file client session))
-                      {:timeout timeout
-                       :max-output max-output
-                       :on-response (if (= "text" format) (evaluation/text-printer) (fn [_]))})]
+                      (merge {:timeout timeout
+                              :max-output max-output
+                              :on-response (if (= "text" format) (evaluation/text-printer) (fn [_]))}
+                             evaluate-options))]
         (if (= "text" format)
           (do (when (or truncated message) (end-err-line err))
               (when truncated (warn (str "Cut the output at " max-output " characters")))
@@ -320,7 +322,11 @@ printed as it arrives and each value on a line of its own."
                        ;; For the file and line numbers in errors.
                        file (assoc :file (.getAbsolutePath (io/file file))))
                      options
-                     ctx))
+                     ctx
+                     ;; Reading the code used stdin up, so reads from *in*
+                     ;; get end of input.
+                     (when (= ["-"] args)
+                       {:read-line (constantly nil)})))
 
 (def ^:private load-options
   (concat connection-options evaluation-options common-options))
@@ -350,7 +356,8 @@ an ns form switches the session to that namespace."
                         :file-path (.getAbsolutePath file)
                         :file-name (.getName file)}
                        options
-                       ctx)))
+                       ctx
+                       nil)))
 
 (def ^:private interrupt-options
   (concat connection-options [session-option] common-options))
