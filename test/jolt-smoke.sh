@@ -14,4 +14,8 @@ jolt -M:jolt eval --port "$port" '(throw (ex-info "expected failure" {}))'
 status=$?
 set -e
 [[ $status == 1 ]]
-echo 'Jolt non-interactive smoke tests passed.'
+repl=$(printf '(+ 1 2)\n(+ 10\n20)\n,doc map\n,quit\n' | jolt -M:jolt --port "$port")
+[[ $repl == *'user=> 3'* && $repl == *'... 30'* && $repl == *'clojure.core/map'* ]]
+# EOF must also exit without requiring ,quit.
+printf '(+ 1 2)\n' | jolt -M:jolt --port "$port" | grep -q 'user=> 3'
+echo 'Jolt CLI and basic REPL smoke tests passed.'

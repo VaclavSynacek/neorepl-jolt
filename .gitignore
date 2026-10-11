@@ -5,6 +5,7 @@
 *.iml
 
 .cpcache/
+/.jolt/
 /.nrepl-port
 /target
 /.clj-kondo/.cache

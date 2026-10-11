@@ -34,4 +34,10 @@
                 sessions/named (fn [_file _client] (sorted-map))
                 sessions/close! (fn [_file _client _name] nil)
                 sessions/interrupt (fn [_file _client _name] :unknown-session)]
-    (apply main/-main args)))
+    (let [status (main/run args {:dir (System/getProperty "user.dir")
+                                 :history-dir nil
+                                 :terminal {}
+                                 :editor-command (or (System/getenv "VISUAL")
+                                                     (System/getenv "EDITOR"))})]
+      (flush)
+      (System/exit status))))

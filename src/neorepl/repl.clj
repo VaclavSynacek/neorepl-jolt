@@ -394,7 +394,9 @@
     (if-let [editor (some-> terminal
                             (merge (select-keys lookups [:complete :eldoc :doc])
                                    {:incomplete? incomplete?
-                                    :history-file (history-file history-dir (or (:project-dir client) dir))})
+                                    :dir (or (:project-dir client) dir)
+                                    :history-file (when history-dir
+                                                    (history-file history-dir (or (:project-dir client) dir)))})
                             editor/open)]
       (try
         (interactive client session editor in-ns editor-command)
