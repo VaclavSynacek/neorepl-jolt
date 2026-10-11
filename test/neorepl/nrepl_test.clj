@@ -3,6 +3,7 @@
             [neorepl.nrepl :as nrepl]
             [neorepl.test-server :as test-server :refer [*port* lf with-client]]
             [nrepl.middleware :as middleware]
+            [nrepl.core :as upstream]
             [nrepl.server :as server]
             [nrepl.transport :as transport])
   (:import (java.lang.ref WeakReference)
@@ -69,6 +70,21 @@
                   (.flush))))
       (let [e (is (thrown? clojure.lang.ExceptionInfo (nrepl/connect {:port (.getLocalPort socket)})))]
         (is (= ::nrepl/no-server (:type (ex-data e))))))))
+
+(deftest runtime-transport-test
+  (let [seen (atom [])
+        lock (fn [_file f] (f))
+        factory (fn [{:keys [host port] :as opts}]
+                  (swap! seen conj opts)
+                  (upstream/connect :host host :port port))
+        original upstream/connect]
+    (with-client [client {:url (str "nrepl://127.0.0.1:" *port*)
+                          :transport-factory factory :cache-lock lock}]
+      (is (= ["3"] (values (nrepl/request client {:op "eval" :code "(+ 1 2)"}))))
+      (is (identical? lock (:cache-lock client)))
+      (is (= 1 (count @seen)))
+      (is (= *port* (:port (first @seen))))
+      (is (identical? original upstream/connect)))))
 
 (deftest request-test
   (with-client [client {:port *port*}]

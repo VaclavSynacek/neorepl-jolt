@@ -55,6 +55,56 @@ jobs:
           bb: ${{ matrix.bb }}
       - run: bb test
 
+  jolt:
+    name: Jolt ${{ matrix.version }} (Linux)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['0.8.21', latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+      - uses: DeLaGuardo/setup-clojure@13.7.0
+        with:
+          cli: latest
+      - name: Install test prerequisites on the disposable runner
+        run: sudo apt-get update && sudo apt-get install -y tmux libreadline-dev
+      - name: Fetch Jolt release and verify checksum
+        env:
+          VERSION: ${{ matrix.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          if [[ $VERSION == latest ]]; then
+            tag=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+              https://api.github.com/repos/jolt-lang/jolt/releases/latest | \
+              node -e 'let s=""; process.stdin.on("data",x=>s+=x).on("end",()=>console.log(JSON.parse(s).tag_name))')
+          fi
+          dir="$RUNNER_TEMP/jolt-$VERSION"
+          mkdir -p "$dir"
+          cd "$dir"
+          archive="jolt-$tag-x86_64-linux.tar.gz"
+          url="https://github.com/jolt-lang/jolt/releases/download/$tag/$archive"
+          curl -fsSLO "$url"
+          curl -fsSLO "$url.sha256"
+          echo "$(cut -d' ' -f1 "$archive.sha256")  $archive" | sha256sum -c -
+          tar -xzf "$archive"
+          binary=$(find "$dir" -type f -name jolt -print -quit)
+          test -n "$binary"
+          dirname "$binary" >> "$GITHUB_PATH"
+      - uses: actions/cache@v6
+        with:
+          path: ~/.m2/repository
+          key: jolt-deps-${{ hashFiles('deps.edn') }}
+      - name: Runtime and terminal regressions against Jolt and JVM servers
+        timeout-minutes: 6
+        run: bash test/jolt-ci.sh
+
   lint:
     runs-on: ubuntu-latest
     steps:

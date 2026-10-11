@@ -103,13 +103,17 @@ when it times out.")
       file
       (throw (usage-error (str "No such file: " path))))))
 
-(defn- connect [{:keys [url host port]} dir]
-  (cond
-    (and url (or host port)) (throw (usage-error "--url doesn't go with --host or --port"))
-    url (nrepl/connect url)
-    port (nrepl/connect (cond-> {:port port} host (assoc :host host)))
-    host (throw (usage-error "--host needs a --port"))
-    :else (discovery/connect dir)))
+(defn- runtime-options [options]
+  (select-keys options [:transport-factory :cache-lock]))
+
+(defn- connect [{:keys [url host port] :as options} dir]
+  (let [runtime (runtime-options options)]
+    (cond
+      (and url (or host port)) (throw (usage-error "--url doesn't go with --host or --port"))
+      url (nrepl/connect (merge runtime url))
+      port (nrepl/connect (cond-> (assoc runtime :port port) host (assoc :host host)))
+      host (throw (usage-error "--host needs a --port"))
+      :else (discovery/connect dir runtime))))
 
 (defn- call-with-client
   "Calls f with client, and closes it after."
@@ -178,9 +182,10 @@ when it times out.")
     (with-server project options #(@output %)
       (fn [{:keys [host port]}]
         (call-with-client
-         (-> (nrepl/connect {:host host :port port
-                             :on-unclaimed (fn [{:keys [out err]}]
-                                             (some-> (or out err) print-err))})
+         (-> (nrepl/connect (merge (runtime-options options)
+                                  {:host host :port port
+                                   :on-unclaimed (fn [{:keys [out err]}]
+                                                   (some-> (or out err) print-err))}))
              (assoc :project-dir (:dir project)))
          (fn [client]
            (reset! output #(nrepl/unclaimed client {:err (str % "\n")}))
@@ -192,7 +197,7 @@ when it times out.")
 (defn- with-in-process-server
   "Calls f with a client for a server started in this process, with
   cider-nrepl when it's on the classpath, and stops the server after."
-  [dir f]
+  [dir options f]
   (let [start-server (requiring-resolve 'nrepl.server/start-server)
         stop-server (requiring-resolve 'nrepl.server/stop-server)
         ;; Only when it's there, so failing to load it isn't kept quiet.
@@ -200,7 +205,7 @@ when it times out.")
                   @(requiring-resolve 'cider.nrepl/cider-nrepl-handler))
         server (apply start-server :bind "127.0.0.1" :port 0 (when handler [:handler handler]))]
     (try
-      (with-client {:port (:port server)} dir f)
+      (with-client (assoc (runtime-options options) :port (:port server)) dir f)
       (finally
         (stop-server server)))))
 
@@ -215,12 +220,12 @@ when it times out.")
     (when (and (or tool aliases) (or in-process connect?))
       (throw (usage-error "--tool and --aliases don't go with --port, --host, --url or --in-process")))
     (cond
-      in-process (with-in-process-server dir f)
+      in-process (with-in-process-server dir options f)
       connect? (with-client options dir f)
       :else
       (let [project (delay (jack-in/find-project dir tool))
             client (try
-                     (discovery/connect dir)
+                     (discovery/connect dir (runtime-options options))
                      (catch clojure.lang.ExceptionInfo e
                        (cond
                          (not= ::nrepl/no-server (:type (ex-data e))) (throw e)
@@ -447,9 +452,9 @@ does."
   neorepl ports
   neorepl ports --format json"))
 
-(defn- ports-command [{:keys [format]} args {:keys [dir]}]
+(defn- ports-command [{:keys [format] :as options} args {:keys [dir]}]
   (reject-args args)
-  (let [ports (discovery/probe dir)]
+  (let [ports (discovery/probe dir (runtime-options options))]
     (print-rows format
                 (fn [{:keys [file port live versions]}]
                   [file
@@ -788,10 +793,10 @@ with an error, and 2 on usage errors."
 (defn- running-server
   "The live server with its port file in dir, if any, the way
   discovery/probe has it."
-  [dir]
+  [dir options]
   (some #(when (and (:live %) (= dir (:dir %))) %)
         (try
-          (discovery/probe dir)
+          (discovery/probe dir (runtime-options options))
           (catch clojure.lang.ExceptionInfo _ nil))))
 
 (defn- server-command [{:keys [tool format] :as options} args {:keys [dir]}]
@@ -799,7 +804,7 @@ with an error, and 2 on usage errors."
   (let [{project-dir :dir :as project} (or (jack-in/find-project dir tool)
                                            (throw (jack-in/no-project dir tool)))]
     ;; Another one would take its port file.
-    (when-let [{:keys [port]} (running-server project-dir)]
+    (when-let [{:keys [port]} (running-server project-dir options)]
       (throw (ex-info (str "There's a server for " project-dir " running already, on port " port)
                       {:type ::server-running})))
     (with-server project options print-err-line
@@ -860,13 +865,17 @@ version."))
     (cond
       error (throw (usage-error error))
       (:help (:options parsed)) (do (println help) 0)
-      :else (main (:options parsed) (:args parsed) ctx))))
+      :else (do
+              (when (and (:in-process (:options parsed)) (= false (:in-process? ctx)))
+                (throw (usage-error "--in-process is unavailable on this runtime; connect to a server with --port")))
+              (main (merge (:options parsed) (runtime-options ctx)) (:args parsed) ctx)))))
 
 (defn run
   "Runs the neorepl command line args and returns the exit status. ctx has
   the :dir to look for port files in, the :sessions-file, the REPL's
   :history-dir, the :terminal options for its line editor, without which the
-  REPL is the plain kind, and the :editor-command ,edit uses."
+  REPL is the plain kind, and the :editor-command ,edit uses. Runtime adapters
+  can provide :transport-factory, :cache-lock and :in-process? false."
   [args ctx]
   (let [[command & more] args
         ;; Without a command, it's the REPL, options and all.
@@ -886,7 +895,8 @@ version."))
           ::usage (do (warn (str (ex-message e) "\nRun neorepl " (when spec (str command " ")) "--help for usage."))
                       2)
           (::nrepl/no-server ::nrepl/disconnected ::nrepl/timeout) (do (warn (ex-message e)) 3)
-          (::features/failed ::jack-in/failed ::jack-in/no-project ::server-running) (do (warn (ex-message e)) 1)
+          (::features/failed ::jack-in/failed ::jack-in/no-project ::server-running
+           ::sessions/lock-failed ::sessions/cache-failed :neorepl.editor/unavailable) (do (warn (ex-message e)) 1)
           (throw e))))))
 
 (defn -main [& args]

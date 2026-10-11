@@ -220,5 +220,8 @@
     "abc" 2 [1 3]
     "a\nbc" 3 [2 2]
     "a\n" 2 [2 1]
-    "a\n\n(" 3 [3 1]
-    "\uD83D\uDE00(" 2 [1 2]))
+    "a\n\n(" 3 [3 1])
+  ;; JVM/bb offsets are UTF-16; Jolt offsets are codepoints. Derive the
+  ;; native string offset rather than assuming how emoji are represented.
+  (let [s "\uD83D\uDE00("]
+    (is (= [1 2] (lexer/position s (str/index-of s "("))))))

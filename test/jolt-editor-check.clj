@@ -12,5 +12,18 @@
   (is (str/includes? (editor/highlight "{:a 42}") "\u001b[36m:a\u001b[0m"))
   (is (str/includes? (editor/highlight "{:a 42}") "\u001b[35m42\u001b[0m")))
 
+(deftest pipes-do-not-load-native-editing
+  (let [ed (editor/open {:incomplete? (constantly false)})]
+    (is (nil? (:backend ed)))
+    (is (nil? (find-ns 'neorepl.readline)))
+    (is (nil? (find-ns 'neorepl.terminal-bridge)))
+    (editor/close ed)))
+
+(deftest stable-project-history
+  (let [a (str (editor/history-file "target/history" "."))
+        b (str (editor/history-file "target/history" "src"))]
+    (is (= a (str (editor/history-file "target/history" "./"))))
+    (is (not= a b))))
+
 (let [{:keys [fail error]} (run-tests 'user)]
   (System/exit (if (zero? (+ fail error)) 0 1)))

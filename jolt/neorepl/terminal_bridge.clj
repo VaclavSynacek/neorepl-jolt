@@ -1,22 +1,27 @@
 (ns neorepl.terminal-bridge
-  "Native terminal input bridge; requires an existing C compiler on first use."
+  "Loads a prebuilt bridge. Runtime startup never invokes a compiler."
   (:require [clojure.java.io :as io]
+            [clojure.string :as str]
             [jolt.ffi :as ffi]))
 
 (def library
-  (let [source (io/file (.getPath (io/resource "neorepl/readline_bridge.c")))
-        output (io/file (.getParentFile source) "../../.jolt/neorepl-readline.so")]
-    (when (or (not (.isFile output)) (> (.lastModified source) (.lastModified output)))
-      (io/make-parents output)
-      (let [process (-> (ProcessBuilder. ["cc" "-shared" "-fPIC" "-Wall" "-Wextra" "-O2"
-                                         (.getPath source) "-o" (.getPath output)])
-                        .inheritIO .start)]
-        (when-not (zero? (.waitFor process))
-          (throw (ex-info "Could not build Readline terminal bridge" {})))))
-    (.getCanonicalPath output)))
+  (let [suffix (if (str/includes? (str/lower-case (System/getProperty "os.name")) "mac")
+                 "dylib" "so")
+        resource (io/resource (str "libneorepl-readline." suffix))
+        path (or (System/getenv "NEOREPL_READLINE_BRIDGE")
+                 (when resource (.getPath resource)))]
+    (when-not (and path (.isFile (io/file path)))
+      (throw (ex-info "Readline bridge missing: run bash build/jolt-native.sh, or set NEOREPL_READLINE_BRIDGE to a prebuilt library"
+                      {:type :neorepl.editor/unavailable})))
+    (.getCanonicalPath (io/file path))))
 
 (ffi/load-library library)
+(ffi/defcfn version "neorepl_bridge_version" [] :int)
+(when-not (= 2 (version))
+  (throw (ex-info "Readline bridge is outdated: rebuild with bash build/jolt-native.sh"
+                  {:type :neorepl.editor/unavailable})))
 (ffi/defcfn install "neorepl_terminal_install" [] :int)
 (ffi/defcfn restore "neorepl_terminal_restore" [] :void)
-(ffi/defcfn input-mode "neorepl_input_mode" [:int] :void)
-(ffi/defcfn poll "neorepl_key_poll" [] :int)
+(ffi/defcfn prepare-readline "neorepl_readline_prepare" [] :int)
+(ffi/defcfn input-mode "neorepl_input_mode" [:int] :int)
+(ffi/defcfn poll "neorepl_input_poll" [:int] :int)

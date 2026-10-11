@@ -4,10 +4,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 port=${JOLT_NREPL_PORT:-17888}
 session="neorepl-test-$$"
-trap 'tmux kill-session -t "$session" 2>/dev/null || true' EXIT
+runtime="$PWD/target/jolt-terminal-smoke-$$"
+mkdir -p "$runtime/cache" "$runtime/state"
+trap 'tmux kill-session -t "$session" 2>/dev/null || true; rm -rf "$runtime"' EXIT
 tmux new-session -d -s "$session" -x 100 -y 30 -c "$PWD" 'exec bash'
 tmux set-option -t "$session" remain-on-exit on
-tmux send-keys -t "$session" "exec jolt -M:jolt --port $port" Enter
+printf -v command 'exec env XDG_CACHE_HOME=%q XDG_STATE_HOME=%q jolt -M:jolt --port %q' "$runtime/cache" "$runtime/state" "$port"
+tmux send-keys -t "$session" "$command" Enter
 wait_for() {
   local needle=$1 output
   for ((i=0; i<100; i++)); do
@@ -34,8 +37,8 @@ wait_for '(reduce-kv'
 tmux send-keys -t "$session" C-x C-d
 wait_for 'clojure.core/reduce-kv'
 tmux send-keys -t "$session" C-c
-tmux send-keys -t "$session" '(Thread/sleep 10000)' Enter
-sleep 0.3
+tmux send-keys -t "$session" '(do (println :evaluating) (flush) (Thread/sleep 10000))' Enter
+wait_for $'\n:evaluating'
 tmux send-keys -t "$session" C-c
 wait_for "The server can't interrupt"
 tmux send-keys -t "$session" C-c

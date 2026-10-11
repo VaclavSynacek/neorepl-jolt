@@ -19,6 +19,9 @@
   "Replaces file in one go, so concurrent readers never see half of it."
   [^File file cache]
   (try
+    ;; Some non-JVM Files/move shims replace empty directories. A cache is
+    ;; always a regular file; never let an invalid path clobber a directory.
+    (when (.isDirectory file) (throw (IOException. "Session cache path is a directory")))
     (io/make-parents file)
     (let [tmp (File/createTempFile "sessions" ".edn" (.getParentFile file))]
       (try
@@ -26,19 +29,21 @@
         (Files/move (.toPath tmp) (.toPath file)
                     (into-array CopyOption [StandardCopyOption/ATOMIC_MOVE
                                             StandardCopyOption/REPLACE_EXISTING]))
+        true
         (finally
           (.delete tmp))))
     ;; The session works without the cache, it just won't be there next time.
     (catch IOException e
       (binding [*out* *err*]
-        (println (str "neorepl: Couldn't save the session in " file ": " (ex-message e)))))))
+        (println (str "neorepl: Couldn't save the session in " file ": " (ex-message e))))
+      false)))
 
 (def ^:private in-process
   "What threads hold while one of them has the cache locked: file locks keep
   other processes out, and fail for a thread whose process holds one already."
   (Object.))
 
-(defn- call-with-lock
+(defn- jvm-lock
   "Calls f holding a lock on file's lock file, so CLI calls running at the
   same time update the cache one after the other instead of dropping each
   other's sessions. When there's no locking it (e.g. on a file system
@@ -59,6 +64,11 @@
         (finally
           ;; Closing the channel releases the lock.
           (some-> channel .close))))))
+
+(defn- call-with-lock [file client f]
+  (if-let [cache-lock (:cache-lock client)]
+    (locking in-process (cache-lock file f))
+    (jvm-lock file f)))
 
 (defn- live-sessions
   "A predicate telling whether client's server knows a session id. Servers
@@ -89,14 +99,20 @@
   (let [before (cached file client name)]
     (if (and before ((live-sessions client) before))
       before
-      (call-with-lock file
+      (call-with-lock file client
         #(let [cache (read-cache file)
                now (get-in cache [(:address client) name])]
            ;; Another call may have cached a new one in the meantime.
            (if (and now (not= now before))
              now
-             (let [session (nrepl/clone-session client)]
-               (write-cache! file (assoc-in cache [(:address client) name] session))
+             (let [session (nrepl/clone-session client)
+                   saved? (write-cache! file (assoc-in cache [(:address client) name] session))]
+               ;; A strict runtime lock adapter must not leave an untracked
+               ;; session behind when its supposedly persistent cache fails.
+               (when (and (:cache-lock client) (not saved?))
+                 (try (nrepl/close-session client session) (catch Exception _ nil))
+                 (throw (ex-info "Cannot persist the named session; cleanup of its new session was attempted"
+                                 {:type ::cache-failed :file (str file)})))
                session)))))))
 
 (defn interrupt
@@ -112,7 +128,14 @@
   "Closes the session called name on client's server and drops it from file.
   Returns its id, or nil when there's no such session."
   [file client name]
-  (when-let [session (cached file client name)]
-    (let [closed? (nrepl/close-session client session)]
-      (call-with-lock file #(write-cache! file (update (read-cache file) (:address client) dissoc name)))
-      (when closed? session))))
+  (call-with-lock file client
+    #(let [cache (read-cache file)]
+       (when-let [session (get-in cache [(:address client) name])]
+         ;; Resolve and remove the same id under one lock: a concurrent ensure!
+         ;; must not replace it between close and cache removal.
+         (let [closed? (nrepl/close-session client session)
+               saved? (write-cache! file (update cache (:address client) dissoc name))]
+           (when (and (:cache-lock client) (not saved?))
+             (throw (ex-info "Session closed, but its cache entry could not be removed"
+                             {:type ::cache-failed :file (str file)})))
+           (when closed? session))))))

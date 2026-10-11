@@ -117,10 +117,14 @@
   ;; Closing doesn't wake up a reader blocked in recv, but interrupting does.
   (.interrupt reader))
 
-(defn- open [{:keys [host port socket]} on-unclaimed on-error]
-  (let [client {:transport (if socket
-                             (nrepl/connect :socket socket)
-                             (nrepl/connect :host host :port port))
+(defn- default-transport [{:keys [host port socket]}]
+  (if socket
+    (nrepl/connect :socket socket)
+    (nrepl/connect :host host :port port)))
+
+(defn- open [{:keys [transport-factory cache-lock] :as opts} on-unclaimed on-error]
+  (let [client {:transport ((or transport-factory default-transport) opts)
+                :cache-lock cache-lock
                 :pending (atom {})
                 :on-unclaimed (atom on-unclaimed)}]
     (assoc client :reader (doto (Thread. ^Runnable #(read-responses client on-error)
@@ -136,6 +140,9 @@
   every response no request claims, :on-error every exception a response
   handler throws (by default it's printed to stderr).
 
+  Runtime adapters may supply :transport-factory (options -> transport) and
+  :cache-lock (cache-file, thunk -> result), without changing global vars.
+
   The client carries what describe reports: the server's :ops, a set of op
   names, and its :versions, a sorted map of names such as :clojure and
   :nrepl to version strings. And its :address (host:port or the socket
@@ -144,7 +151,7 @@
     :or {on-unclaimed (fn [_])
          on-error #(binding [*out* *err*] (println "neorepl: response handler failed:" (str %)))}
     :as opts}]
-  (let [{:keys [host port socket] :or {host "127.0.0.1"} :as where} (if url (parse-url url) opts)
+  (let [{:keys [host port socket] :or {host "127.0.0.1"} :as where} (if url (merge opts (parse-url url)) opts)
         address (or socket (str host ":" port))
         no-server #(ex-info (str "No nREPL server answering at " address) {:type ::no-server} %)
         client (try

@@ -1,43 +1,34 @@
 (ns neorepl.jolt
-  "Experimental Jolt entry point. TCP only; no JLine or TLS required."
-  (:require [clojure.walk :as walk]
+  "Jolt entry point. TCP and POSIX terminals; no JLine or TLS required."
+  (:require [clojure.java.io :as io]
+            [clojure.string :as str]
             [neorepl.main :as main]
-            [neorepl.sessions :as sessions]
-            [neorepl.nrepl :as client]
-            [nrepl.core :as nrepl]
-            [nrepl.bencode :as bencode]
-            [nrepl.transport :as transport]))
+            [neorepl.jolt-transport :as transport]
+            [neorepl.posix :as posix]
+            [neorepl.shutdown :as shutdown]
+            [neorepl.xdg :as xdg]))
 
-(defn- connect [& {:keys [host port socket] :or {host "127.0.0.1"}}]
-  (when socket
-    (throw (ex-info "Jolt adapter supports TCP connections only" {:socket socket})))
-  (let [sock (java.net.Socket. host (int port))
-        in (java.io.PushbackInputStream. (.getInputStream sock))
-        out (.getOutputStream sock)]
-    (transport/->FnTransport
-     (fn [_timeout]
-       ;; NeoREPL has a dedicated blocking reader and times requests itself.
-       (walk/keywordize-keys
-        (walk/postwalk (fn [x] (if (bytes? x) (String. x "UTF-8") x))
-                       (bencode/read-bencode in))))
-     (fn [msg]
-       (locking out
-         (bencode/write-bencode out msg)
-         (.flush out)))
-     #(.close sock))))
+(defn context
+  "The runtime seams are ordinary options, not process-wide redefinitions."
+  []
+  {:dir (System/getProperty "user.dir")
+   :transport-factory transport/connect
+   :cache-lock posix/call-with-lock
+   :in-process? false
+   :sessions-file (io/file (xdg/cache-home) "neorepl-jolt" "sessions.edn")
+   ;; The backend honors :history-file, but computes its default without the
+   ;; JVM-only MessageDigest used by the common REPL. EDN and JLine history
+   ;; also deliberately live in separate runtime-specific directories.
+   :history-dir nil
+   :terminal {:history-dir (io/file (xdg/state-home) "neorepl-jolt" "history")
+              :color? (str/blank? (System/getenv "NO_COLOR"))}
+   :editor-command (some #(not-empty (System/getenv %)) ["VISUAL" "EDITOR"])})
 
 (defn -main [& args]
-  ;; Jolt currently lacks FileChannel.lock. Use a fresh session per call
-  ;; rather than pretending the on-disk session cache is concurrency-safe.
-  (with-redefs [nrepl/connect connect
-                sessions/ensure! (fn [_file c _name] (client/clone-session c))
-                sessions/named (fn [_file _client] (sorted-map))
-                sessions/close! (fn [_file _client _name] nil)
-                sessions/interrupt (fn [_file _client _name] :unknown-session)]
-    (let [status (main/run args {:dir (System/getProperty "user.dir")
-                                 :history-dir nil
-                                 :terminal {}
-                                 :editor-command (or (System/getenv "VISUAL")
-                                                     (System/getenv "EDITOR"))})]
-      (flush)
-      (System/exit status))))
+  (let [status (main/run args (context))]
+    ;; Closing the editor wakes the input thread during a signal shutdown.
+    ;; Let Jolt's signal dispatcher finish exiting with 128+signal rather
+    ;; than racing it with a successful System/exit from this thread.
+    (when (shutdown/exiting?) @(promise))
+    (flush)
+    (System/exit status)))

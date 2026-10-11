@@ -3,7 +3,7 @@
         nrepl/nrepl {:mvn/version "1.8.0"}
         org.jline/jline {:mvn/version "4.4.7"}}
  :aliases
- {:jolt {:extra-paths ["jolt"]
+ {:jolt {:extra-paths ["jolt" "target/jolt-native"]
          :override-deps {nrepl/nrepl {:mvn/version "0.8.3"}}
          :main-opts ["-m" "neorepl.jolt"]}
   :test {:extra-paths ["test"]

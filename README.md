@@ -141,6 +141,49 @@ bb test:jvm         # on the JVM, with the default Clojure version
 bb test:jvm :1.10   # ... or with an older one (:1.10, :1.11)
 ```
 
+## Experimental Jolt client
+
+The optional [Jolt](https://github.com/jolt-lang/jolt) backend is validated on
+Linux with Jolt 0.8.21; CI also targets the latest release. It keeps neorepl's
+nREPL routing and codec,
+with a small TCP adapter and POSIX cache locking. Named CLI sessions persist
+on servers that retain their sessions, including JVM nREPL. Jolt's minimal
+built-in server does not provide all the middleware features of JVM nREPL.
+TLS, Unix sockets and `--in-process` are not supported by this backend.
+
+From a checkout:
+
+```shell
+jolt -M:jolt eval --port 7888 '(+ 1 2)'  # no Readline or compiler needed
+bash build/jolt-native.sh              # build once, not at REPL startup
+jolt -M:jolt --port 7888                # GNU Readline interactive editor
+bash test/jolt-ci.sh                   # starts bounded Jolt/JVM test servers
+```
+
+Interactive editing needs GNU Readline 8 and a prebuilt terminal bridge.
+The loader recognizes versioned runtime libraries such as `libreadline.so.8`;
+an unversioned development-library symlink is not required. The build script
+writes the bridge to `target/jolt-native`, which the `:jolt` alias includes.
+Packagers must build it for the target architecture and include that resource,
+or set `NEOREPL_READLINE_BRIDGE` to its absolute path. No compiler is invoked
+at runtime. A macOS build target exists but is not covered by this CI matrix.
+
+One thread owns Readline, terminal input, output and cleanup. Enter submits
+complete forms, Ctrl-J inserts a newline, and Up/Down navigate multiline
+input or history. C-x C-d shows documentation. Ctrl-C cancels input or asks
+the server to interrupt; cancellation also discards old type-ahead. If the
+server cannot interrupt, a second Ctrl-C stops waiting without claiming to
+stop the remote code. Background output is printed above the input buffer.
+
+Jolt-specific session caches and EDN history live under the XDG cache/state
+homes in `neorepl-jolt`. History is per project, stores complete multiline
+entries and excludes evaluation stdin. It is separate from JLine's history
+format. Pipes and `TERM=dumb` do not load Readline or the bridge.
+
+GNU Readline is GPL-licensed and is not bundled here. Redistributing an
+interactive binary/package requires a license review; the optional backend
+is not a claim that Readline can be bundled under neorepl's EPL license.
+
 ## License
 
 Copyright © 2026 Bozhidar Batsov and contributors.
