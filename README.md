@@ -111,6 +111,25 @@ $ neorepl check src/my/app.clj
 src/my/app.clj:12:1: Unclosed (
 ```
 
+## How does it compare?
+
+neorepl isn't the only terminal REPL that talks nREPL these days:
+
+- The Clojure team's [clojure-cli.repl](https://github.com/clojure/clojure-cli.repl)
+  runs an nREPL server of its own on the project's classpath and a JLine
+  client in a second JVM. It has structural editing, evaluation of the form
+  at the cursor, Clojure and Java docs and a `datafy`/`nav` inspector. The
+  docs and the inspector are ops of its server, and it needs Clojure 1.12+.
+- `bb repl --connect` puts babashka's console REPL in front of any nREPL
+  server, with completion, eldoc, doc lookup and Ctrl-C. bb's own server
+  also bundles cider-nrepl's inspector, test runner and stacktrace ops.
+
+neorepl follows CIDER instead. It sends the ops CIDER sends, so it gets the
+most out of a server with cider-nrepl (or babashka's take on it) and falls
+back to nREPL's built-in ops and plain evaluation without one. It doesn't
+add middleware of its own. On top of that come jack-in, ClojureScript
+sessions and a CLI for scripts and coding agents.
+
 ## Development
 
 neorepl runs from the same source on the JVM (Java 17+, Clojure 1.10+) and on

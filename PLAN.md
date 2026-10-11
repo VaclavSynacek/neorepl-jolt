@@ -19,13 +19,15 @@ Non-goals:
 - Becoming a full-screen IDE. The REPL stays inline; full-screen views only where inline doesn't work (inspector, test results).
 - Getting bundled with Leiningen. Jack-in handles lein projects through `lein repl :headless`, which needs nothing from Leiningen.
 
-### Why not rebel-readline or `bb repl --connect`?
+### Why not rebel-readline, `bb repl --connect` or clojure-cli.repl?
 
 Rebel is a line-reader library with nREPL support added later (`rebel-readline-nrepl`). It's good at editing and we should borrow its UX freely.
 
-babashka 1.13.221 added `bb repl --connect`: a ~50-line client on `nrepl.core` (eval, completion, lookup, stdin, interrupt) on top of bb's JLine console REPL. It's a quick connect mode and a good reference for the JLine side.
+babashka 1.13.221 added `bb repl --connect`: a ~50-line client on `nrepl.core` (eval, completion, lookup, stdin, interrupt) on top of bb's JLine console REPL. It's a quick connect mode and a good reference for the JLine side. The same release bundled cider-nrepl's inspector (`inspect-*`), test (`test`, `test-var-query`, `retest`, ...) and `analyze-last-stacktrace` ops in `bb nrepl-server`, and the CIDER debugger is on its way. The client doesn't use them yet. Our test runner and inspector (0.2) will, so they should work against bb out of the box.
 
-Neither tries to be an nREPL-first tool with CIDER's tooling, jack-in, and a CLI/agent surface, which is the point of this project.
+The Clojure team released [clojure-cli.repl](https://github.com/clojure/clojure-cli.repl) 0.1.0 on 2026-09-28: a JLine client in its own JVM (rewrite-clj, tools.reader, nREPL 1.7) and an nREPL server on the project classpath, started together (`clojure -M:repl`) or separately (`:serve`/`:attach`). Strong on editing: paredit ops, eval-form-at-cursor, doc-at-cursor with Java docs (`java.doc`) and clojuredocs examples, a `datafy`/`nav` inspector, user-defined prompts, hooks and server middleware from `.cljconf` config. Its doc, inspector and auto-require are its own ops (`doc`, `inspect-start`, ..., `auto-require`), so against another server it's eval only. As of 0.1.1 there's no TAB completion, eldoc or `need-input` handling, and it's Clojure 1.12+ on the JVM only. Things worth borrowing: eval-form-at-cursor, paredit widgets, the prompt showing the last eval's outcome and duration, and `^:optional` middleware.
+
+None of them tries to be an nREPL-first tool with CIDER's tooling, jack-in, and a CLI/agent surface, which is the point of this project.
 
 ## Design principles
 
