@@ -398,8 +398,6 @@
                                     :history-file (when history-dir
                                                     (history-file history-dir (or (:project-dir client) dir)))})
                             editor/open)]
-      (try
-        (interactive client session editor in-ns editor-command)
-        (finally
-          (editor/close editor)))
+      (shutdown/call-with-cleanup #(editor/close editor)
+                                  #(interactive client session editor in-ns editor-command))
       (plain client session editor-command))))

@@ -7,7 +7,8 @@ port=${JOLT_NREPL_PORT:-17888}
 [[ $(jolt -M:jolt eval --port "$port" '(+ 1 2)') == 3 ]]
 json=$(jolt -M:jolt eval --port "$port" --format json '(do (println "hello") {:answer 42})')
 [[ $json == *'"status":"ok"'* && $json == *'"out":"hello\n"'* && $json == *'{:answer 42}'* ]]
-jolt -M:jolt doc --port "$port" map | grep -q clojure.core/map
+doc=$(jolt -M:jolt doc --port "$port" map)
+[[ $doc == *'clojure.core/map'* ]]
 jolt -M:jolt check src/neorepl/main.clj jolt/neorepl/jolt.clj
 set +e
 jolt -M:jolt eval --port "$port" '(throw (ex-info "expected failure" {}))'
@@ -17,5 +18,6 @@ set -e
 repl=$(printf '(+ 1 2)\n(+ 10\n20)\n,doc map\n,quit\n' | jolt -M:jolt --port "$port")
 [[ $repl == *'user=> 3'* && $repl == *'... 30'* && $repl == *'clojure.core/map'* ]]
 # EOF must also exit without requiring ,quit.
-printf '(+ 1 2)\n' | jolt -M:jolt --port "$port" | grep -q 'user=> 3'
+eof=$(printf '(+ 1 2)\n' | jolt -M:jolt --port "$port")
+[[ $eof == *'user=> 3'* ]]
 echo 'Jolt CLI and basic REPL smoke tests passed.'
