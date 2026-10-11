@@ -194,7 +194,7 @@ Size goal: the core stays around 3-4k lines through 1.0. If it grows well past t
 
 ## Milestones
 
-Each one is a release people can use.
+Each one is a release people can use. The first three stages below all went into 0.1 (2026-10-10).
 
 0.1, foundations
 - Client layer over `nrepl.core`, sessions, server discovery, URLs.
@@ -202,21 +202,19 @@ Each one is a release people can use.
 - Basic interactive REPL: multi-line input, history, highlighting, Ctrl-C, stdin, ns in the prompt, pretty printing.
 - Runs on the JVM and bb.
 
-At this point it already replaces REPLy for connecting to a server, and it's a usable agent tool.
-
-0.2, CIDER essentials
+0.1, CIDER essentials
 - Completion, eldoc, doc/source/apropos/info, macroexpansion, error rendering with stacktrace analysis, load-file and reload, all through the ladder.
 - Comma commands, find definition (prints the location; `,edit` opens `$EDITOR`).
 
-0.3, jack-in
+0.1, jack-in
 - deps.edn, lein, bb and shadow-cljs projects, cider-nrepl injection, `neorepl server`, in-process mode.
 - clj/cljs sessions, through shadow-cljs or the piggieback jack-in adds to deps.edn and Leiningen projects.
 
-0.4, tests and inspection
+0.2, tests and inspection
 - Test runner with summaries, rerun failures, jump to a failure.
 - Full-screen inspector and stacktrace browser.
 
-0.5, agents, round two
+0.3, agents, round two
 - MCP server, the skill, docs for common agent setups.
 
 1.0
@@ -263,7 +261,7 @@ Not covered yet: Linux (Docker wasn't running) and Windows. Neither should surpr
 
 ## Open questions
 
-1. Which runtimes get CI from day one? Proposal: Clojure and bb in 0.1, shadow-cljs in 0.3, the rest as people show up.
+1. Which runtimes get CI from day one? Proposal: Clojure, bb and shadow-cljs, since 0.1 supports all three, and the rest as people show up.
 2. Things to raise with borkdude: exposing `org.jline.utils.Status` (mid-buffer eldoc without reflection) and `org.jline.reader.CompletingParsedLine` (for reify) in bb, how `bb repl --connect` and neorepl should relate long term, and `bb nrepl-server`'s `info` op: it has no `:line` or `:column`, which its `lookup` has, and it resolves files like `clojure/core.clj` against the working directory, so `neorepl where` on bb points at the top of the file or at a file that isn't there. Also, `bb nrepl-server` answers an interrupted evaluation with `done` straight away and sends the evaluation's InterruptedException after it, as output for a message that's over.
 3. Things to raise in nREPL: `need-input` going to the connection that created the session, and an interrupted evaluation's final response going to the interrupter's connection, see the gotcha above; the warnings 1.6 added when a middleware's descriptor requires one that isn't in the stack fire a dozen times on every shadow-cljs start with cider-nrepl, for `cider.piggieback/wrap-cljs-repl`, which neither needs there.
 4. Things to raise in piggieback: evaluating every form of an `eval` message, the way nREPL's own eval does, and loading ClojureScript on the first `cljs-repl` rather than at startup. In ClojureScript: interrupting the Node REPL, see the gotcha above.
