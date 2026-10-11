@@ -3,7 +3,10 @@
         nrepl/nrepl {:mvn/version "1.8.0"}
         org.jline/jline {:mvn/version "4.4.7"}}
  :aliases
- {:test {:extra-paths ["test"]
+ {:jolt {:extra-paths ["jolt"]
+         :override-deps {nrepl/nrepl {:mvn/version "0.8.3"}}
+         :main-opts ["-m" "neorepl.jolt"]}
+  :test {:extra-paths ["test"]
          ;; JLine loads native code, which Java 22+ warns about without this.
          :jvm-opts ["--enable-native-access=ALL-UNNAMED"]
          :main-opts ["-m" "neorepl.test-runner"]}

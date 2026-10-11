@@ -39,7 +39,10 @@
             (and (nil? inline) (empty? more)) {:error (str name " needs a value")}
             :else (let [value (or inline (first more))]
                     ;; parse returning nil or throwing both mean it's invalid.
-                    (if-some [v (try (parse value) (catch Exception _ nil))]
+                    (if-some [v (try (if (set? parse)
+                                      (when (contains? parse value) value)
+                                      (parse value))
+                                    (catch Exception _ nil))]
                       (recur (if inline more (rest more))
                              (assoc options (option-key spec) v)
                              positional)
