@@ -40,6 +40,7 @@ piped=$(printf '(+ 1 2)\n' | NEOREPL_READLINE_BRIDGE=/nonexistent timeout 15s jo
 timeout 45s bash test/jolt-smoke.sh
 JOLT_NREPL_PORT="$JVM_NREPL_PORT" timeout 45s bash test/jolt-smoke.sh
 timeout 20s jolt -A:jolt test/jolt-editor-check.clj
+timeout 15s jolt -A:jolt test/jolt-lifecycle-unit.clj
 timeout 40s jolt -A:jolt test/jolt-client-check.clj "$JVM_NREPL_PORT" < /dev/null
 timeout 30s jolt -A:jolt:test -e '(require (quote [clojure.test :as t]) (quote neorepl.cli-test) (quote neorepl.lexer-test) (quote neorepl.json-test) (quote neorepl.render-test)) (let [r (t/run-tests (quote neorepl.cli-test) (quote neorepl.lexer-test) (quote neorepl.json-test) (quote neorepl.render-test))] (System/exit (if (zero? (+ (:fail r) (:error r))) 0 1)))'
 session_count() {
